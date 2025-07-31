@@ -7,6 +7,7 @@ Allows creating multiple worktree variants, implementing solutions in parallel,
 evaluating them, and selecting the best one.
 """
 
+import asyncio
 import json
 import shutil
 import subprocess
@@ -28,6 +29,8 @@ class WorktreeSession:
         self.base_path = base_path
         self.worktrees: Dict[str, Path] = {}
         self.implementations: Dict[str, bool] = {}  # Track completion
+        self.execution_results: Dict[str, dict] = {}  # Track Claude execution results
+        self.evaluations: Dict[str, dict] = {}  # Track implementation evaluations
         self.created_at = datetime.now()
         self.base_branch = self._get_current_branch()
     
@@ -47,6 +50,158 @@ mcp = FastMCP("worktree-voting")
 
 # Global sessions store
 sessions: Dict[str, WorktreeSession] = {}
+
+
+async def execute_claude_in_worktree(worktree_path: Path, task: str) -> dict:
+    """Execute Claude in a specific worktree"""
+    try:
+        # Construct the Claude command
+        cmd = [
+            "claude", 
+            "--print", 
+            "--add-dir", str(worktree_path),
+            f"Implement the following task: {task}"
+        ]
+        
+        # Execute Claude
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            cwd=worktree_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        
+        stdout, stderr = await process.communicate()
+        
+        return {
+            "success": process.returncode == 0,
+            "stdout": stdout.decode() if stdout else "",
+            "stderr": stderr.decode() if stderr else "",
+            "returncode": process.returncode
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "returncode": -1
+        }
+
+
+def evaluate_implementation(worktree_path: Path, base_branch: str) -> dict:
+    """Evaluate an implementation in a worktree"""
+    evaluation = {
+        "has_changes": False,
+        "files_changed": 0,
+        "lines_added": 0,
+        "lines_removed": 0,
+        "test_results": None,
+        "quality_score": 0
+    }
+    
+    try:
+        # Get diff statistics
+        diff_result = subprocess.run(
+            ["git", "diff", "--stat", base_branch],
+            cwd=worktree_path,
+            capture_output=True,
+            text=True
+        )
+        
+        if diff_result.returncode == 0 and diff_result.stdout:
+            evaluation["has_changes"] = True
+            lines = diff_result.stdout.strip().split('\n')
+            if lines:
+                # Parse diff stats from last line (e.g., "2 files changed, 45 insertions(+), 12 deletions(-)")
+                last_line = lines[-1]
+                if "file" in last_line:
+                    parts = last_line.split(',')
+                    for part in parts:
+                        part = part.strip()
+                        if "file" in part:
+                            evaluation["files_changed"] = int(part.split()[0])
+                        elif "insertion" in part:
+                            evaluation["lines_added"] = int(part.split()[0])
+                        elif "deletion" in part:
+                            evaluation["lines_removed"] = int(part.split()[0])
+        
+        # Try to run tests if available
+        for test_cmd in [["npm", "test"], ["pytest"], ["python", "-m", "pytest"], ["uv", "run", "pytest"]]:
+            try:
+                test_result = subprocess.run(
+                    test_cmd,
+                    cwd=worktree_path,
+                    capture_output=True,
+                    text=True,
+                    timeout=60
+                )
+                evaluation["test_results"] = {
+                    "command": " ".join(test_cmd),
+                    "success": test_result.returncode == 0,
+                    "output": test_result.stdout[:1000] if test_result.stdout else "",
+                    "error": test_result.stderr[:500] if test_result.stderr else ""
+                }
+                break
+            except (subprocess.TimeoutExpired, FileNotFoundError):
+                continue
+        
+        # Calculate quality score (simple heuristic)
+        score = 0
+        if evaluation["has_changes"]:
+            score += 30
+        if evaluation["test_results"] and evaluation["test_results"]["success"]:
+            score += 50
+        if evaluation["files_changed"] > 0:
+            score += min(evaluation["files_changed"] * 5, 20)
+        
+        evaluation["quality_score"] = score
+        
+    except Exception as e:
+        evaluation["error"] = str(e)
+    
+    return evaluation
+
+
+async def execute_all_worktrees(session_id: str):
+    """Execute Claude in all worktrees for a session"""
+    if session_id not in sessions:
+        return
+    
+    session = sessions[session_id]
+    
+    # Create tasks for all worktrees
+    tasks = []
+    for worktree_id, worktree_path in session.worktrees.items():
+        task = execute_claude_in_worktree(worktree_path, session.task)
+        tasks.append((worktree_id, task))
+    
+    # Execute all tasks concurrently
+    results = await asyncio.gather(*[task for _, task in tasks], return_exceptions=True)
+    
+    # Process results
+    for (worktree_id, _), result in zip(tasks, results):
+        try:
+            if isinstance(result, Exception):
+                session.execution_results[worktree_id] = {
+                    "success": False,
+                    "error": f"Task execution failed: {str(result)}",
+                    "returncode": -1
+                }
+            else:
+                session.execution_results[worktree_id] = result
+                
+                # Mark as complete if successful
+                if result.get("success", False):
+                    session.implementations[worktree_id] = True
+                    # Evaluate the implementation
+                    evaluation = evaluate_implementation(session.worktrees[worktree_id], session.base_branch)
+                    session.evaluations[worktree_id] = evaluation
+            
+        except Exception as e:
+            session.execution_results[worktree_id] = {
+                "success": False,
+                "error": f"Task processing failed: {str(e)}",
+                "returncode": -1
+            }
 
 
 @mcp.tool()
@@ -91,6 +246,9 @@ def create_voting_session(task: str, num_variants: int = 5) -> str:
     
     sessions[session_id] = session
     
+    # Start executing Claude in each worktree asynchronously
+    asyncio.create_task(execute_all_worktrees(session_id))
+    
     response = {
         "session_id": session_id,
         "task": task,
@@ -98,9 +256,11 @@ def create_voting_session(task: str, num_variants: int = 5) -> str:
         "worktrees": {
             wid: str(path) for wid, path in session.worktrees.items()
         },
+        "status": "Worktrees created. Claude is now executing in each worktree automatically.",
         "instructions": (
-            f"Voting session created! For each worktree, navigate to the directory "
-            f"and run: claude 'Implement the following task: {task}'"
+            f"Claude is automatically implementing the task in each worktree. "
+            f"Use list_sessions() to monitor progress, then evaluate_implementations() "
+            f"when all are complete to select the best implementation."
         )
     }
     
@@ -113,13 +273,15 @@ def list_sessions() -> str:
     sessions_list = []
     for sid, session in sessions.items():
         completed = sum(1 for done in session.implementations.values() if done)
+        executing = len(session.execution_results)
         sessions_list.append({
             "session_id": sid,
             "task": session.task,
             "created_at": session.created_at.isoformat(),
             "variants": session.num_variants,
             "completed": completed,
-            "status": f"{completed}/{session.num_variants} implementations complete"
+            "executing": executing,
+            "status": f"{completed}/{session.num_variants} complete, {executing}/{session.num_variants} executed"
         })
     
     return json.dumps(sessions_list, indent=2)
@@ -193,7 +355,7 @@ def mark_implementation_complete(session_id: str, worktree_id: str) -> str:
 
 @mcp.tool()
 def evaluate_implementations(session_id: str) -> str:
-    """Get all implementations for evaluation
+    """Get all implementations for evaluation and ranking
     
     Args:
         session_id: The voting session ID
@@ -205,34 +367,94 @@ def evaluate_implementations(session_id: str) -> str:
     evaluations = []
     
     for wid, path in session.worktrees.items():
-        # Get the diff for this worktree
-        result = subprocess.run(
-            ["git", "diff", session.base_branch],
-            cwd=path,
-            capture_output=True,
-            text=True
-        )
-        
-        evaluations.append({
+        evaluation_data = {
             "worktree_id": wid,
             "path": str(path),
             "completed": session.implementations[wid],
             "branch": f"voting-{session_id}-{wid}",
-            "has_changes": len(result.stdout) > 0
-        })
+            "execution_result": session.execution_results.get(wid, {}),
+            "evaluation": session.evaluations.get(wid, {})
+        }
+        
+        # If no evaluation exists yet, create one
+        if not evaluation_data["evaluation"] and evaluation_data["completed"]:
+            evaluation = evaluate_implementation(path, session.base_branch)
+            session.evaluations[wid] = evaluation
+            evaluation_data["evaluation"] = evaluation
+        
+        evaluations.append(evaluation_data)
+    
+    # Sort by quality score (highest first)
+    evaluations.sort(key=lambda x: x["evaluation"].get("quality_score", 0), reverse=True)
+    
+    # Add ranking
+    for i, eval_data in enumerate(evaluations):
+        eval_data["rank"] = i + 1
+    
+    # Find the best implementation
+    best_implementation = evaluations[0] if evaluations else None
     
     response = {
         "session_id": session_id,
         "task": session.task,
         "base_branch": session.base_branch,
         "implementations": evaluations,
-        "evaluation_instructions": (
-            "To evaluate, visit each worktree directory and examine the implementation. "
-            "Use 'git diff' to see changes, run tests, and assess code quality."
-        )
+        "best_implementation": {
+            "worktree_id": best_implementation["worktree_id"],
+            "quality_score": best_implementation["evaluation"].get("quality_score", 0),
+            "rank": 1
+        } if best_implementation else None,
+        "summary": {
+            "total_variants": session.num_variants,
+            "completed": sum(1 for e in evaluations if e["completed"]),
+            "with_changes": sum(1 for e in evaluations if e["evaluation"].get("has_changes", False)),
+            "tests_passed": sum(1 for e in evaluations if e["evaluation"].get("test_results", {}).get("success", False))
+        },
+        "recommendation": (
+            f"Best implementation: {best_implementation['worktree_id']} "
+            f"(score: {best_implementation['evaluation'].get('quality_score', 0)})"
+        ) if best_implementation else "No implementations completed successfully"
     }
     
     return json.dumps(response, indent=2)
+
+
+@mcp.tool()
+def auto_select_best(session_id: str, merge_to_main: bool = False) -> str:
+    """Automatically select and finalize the best implementation
+    
+    Args:
+        session_id: The voting session ID
+        merge_to_main: Whether to merge to main branch (default: false)
+    """
+    if session_id not in sessions:
+        return f"Session {session_id} not found"
+    
+    session = sessions[session_id]
+    
+    # Get evaluations
+    evaluations = []
+    for wid, path in session.worktrees.items():
+        if session.implementations[wid]:  # Only consider completed implementations
+            evaluation = session.evaluations.get(wid)
+            if not evaluation:
+                evaluation = evaluate_implementation(path, session.base_branch)
+                session.evaluations[wid] = evaluation
+            
+            evaluations.append((wid, evaluation))
+    
+    if not evaluations:
+        return json.dumps({
+           "error": "No completed implementations found",
+           "message": "Wait for implementations to complete before auto-selecting"
+        }, indent=2)
+    
+    # Sort by quality score
+    evaluations.sort(key=lambda x: x[1].get("quality_score", 0), reverse=True)
+    best_worktree_id, _ = evaluations[0]
+    
+    # Use the existing finalize_best function
+    return finalize_best(session_id, best_worktree_id, merge_to_main)
 
 
 @mcp.tool()
@@ -266,17 +488,29 @@ def finalize_best(session_id: str, worktree_id: str, merge_to_main: bool = False
         if result.returncode != 0:
             return f"Error merging: {result.stderr}"
     
+    # Get evaluation details for the winner
+    winner_evaluation = session.evaluations.get(worktree_id, {})
+    
     # Clean up other worktrees
+    cleaned_up = []
     for wid, path in session.worktrees.items():
         if wid != worktree_id:
             subprocess.run(["git", "worktree", "remove", str(path), "--force"], cwd=session.base_path)
             subprocess.run(["git", "branch", "-D", f"voting-{session_id}-{wid}"], cwd=session.base_path)
+            cleaned_up.append(wid)
     
     return json.dumps({
         "status": "finalized",
-        "winner": worktree_id,
+        "winner": {
+            "worktree_id": worktree_id,
+            "quality_score": winner_evaluation.get("quality_score", 0),
+            "files_changed": winner_evaluation.get("files_changed", 0),
+            "lines_added": winner_evaluation.get("lines_added", 0),
+            "test_success": winner_evaluation.get("test_results", {}).get("success", False)
+        },
         "merged_to_main": merge_to_main,
-        "message": f"Implementation {worktree_id} selected as best. Other worktrees cleaned up."
+        "cleaned_up": cleaned_up,
+        "message": f"Implementation {worktree_id} selected as best (score: {winner_evaluation.get('quality_score', 0)}). {len(cleaned_up)} other worktrees cleaned up."
     }, indent=2)
 
 

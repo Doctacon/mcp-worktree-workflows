@@ -1,29 +1,35 @@
 # MCP Worktree Voting Server
 
-An MCP (Model Context Protocol) server that implements the voting pattern for parallel development using git worktrees. This allows you to create multiple implementations of the same task, evaluate them, and select the best one.
+An MCP (Model Context Protocol) server that implements automated parallel development using git worktrees. Creates multiple implementations of the same task simultaneously, automatically evaluates them, and selects the best one.
+
+## 🚀 Key Features
+
+- **Fully Automated**: Claude automatically executes in each worktree
+- **Parallel Execution**: All implementations run concurrently for speed
+- **Smart Evaluation**: Automatic code analysis, test execution, and quality scoring
+- **Best Selection**: Intelligently ranks and selects the highest-quality implementation
+- **Clean Workflow**: Automatic cleanup of unsuccessful variants
 
 ## Installation
 
-1. Clone this repository and install:
+1. Install dependencies:
 ```bash
-git clone <this-repo>
-cd mcp-servers
-pip install -e .  # or just: pip install mcp>=1.1.0
+uv add fastmcp  # or pip install fastmcp
 ```
 
-2. Add the server to Claude Code using ONE of these methods:
+2. Add the server to Claude Code:
 
 ### Option A: Using Claude Code CLI (Recommended)
 ```bash
-# For project-specific use (stored in current project)
+# For project-specific use
 claude mcp add worktree-voting python /path/to/mcp-servers/mcp_worktree_voting.py
 
-# For use across all projects
+# For global use across all projects
 claude mcp add --scope user worktree-voting python /path/to/mcp-servers/mcp_worktree_voting.py
 ```
 
 ### Option B: Manual Configuration
-Add to `.mcp.json` in your project root (for project scope) or `~/.config/claude/mcp.json` (for user scope):
+Add to your MCP configuration file:
 ```json
 {
   "mcpServers": {
@@ -37,72 +43,107 @@ Add to `.mcp.json` in your project root (for project scope) or `~/.config/claude
 
 3. Restart Claude Code or use `/mcp` command to reconnect
 
-## Workflow
+## 🔄 Automated Workflow
 
-### 1. Create a Voting Session
+### 1. Create Session (Everything Starts Here)
 ```
-Use tool: create_voting_session
-Arguments: {
-  "task": "Implement a caching layer for the API",
-  "num_variants": 5
-}
-```
-
-This creates 5 worktrees, each in a separate branch.
-
-### 2. Implement in Each Worktree
-For each worktree directory returned:
-```bash
-cd /path/to/worktree
-claude "Implement the following task: Implement a caching layer for the API"
+create_voting_session(
+  task="Implement user authentication with JWT tokens",
+  num_variants=5
+)
 ```
 
-### 3. Mark Implementations Complete
-After implementing in each worktree:
-```
-Use tool: mark_implementation_complete
-Arguments: {
-  "session_id": "abc123",
-  "worktree_id": "variant-1"
-}
-```
+**What happens automatically:**
+- Creates 5 git worktrees with separate branches
+- Launches Claude in each worktree with `--add-dir` flag
+- Claude implements the task in parallel across all worktrees
+- Evaluates each implementation (code changes, tests, quality metrics)
+- Ranks implementations by quality score
 
-### 4. Evaluate All Implementations
+### 2. Monitor Progress
 ```
-Use tool: evaluate_implementations
-Arguments: {
-  "session_id": "abc123"
-}
+list_sessions()
 ```
+Shows execution status: `3/5 complete, 5/5 executed`
 
-Then review each implementation by visiting the worktree directories.
-
-### 5. Select the Best Implementation
+### 3. Review Evaluations
 ```
-Use tool: finalize_best
-Arguments: {
-  "session_id": "abc123",
-  "worktree_id": "variant-3",
-  "merge_to_main": true
-}
+evaluate_implementations(session_id="abc12345")
 ```
 
-This merges the best implementation and cleans up the other worktrees.
+Returns detailed analysis:
+- **Ranked implementations** by quality score
+- **Code metrics**: files changed, lines added/removed
+- **Test results**: pass/fail status for each variant
+- **Recommendation**: Best implementation identified
 
-## Available Tools
+### 4. Auto-Select Best Implementation
+```
+auto_select_best(
+  session_id="abc12345",
+  merge_to_main=true
+)
+```
+Automatically selects highest-scoring implementation and merges it.
 
-- **create_voting_session**: Start a new voting workflow
-- **list_sessions**: See all active voting sessions
-- **get_worktree_info**: Get details about worktrees in a session
-- **mark_implementation_complete**: Track implementation progress
-- **evaluate_implementations**: Prepare for evaluation phase
-- **finalize_best**: Select winner and clean up
-- **cleanup_session**: Force cleanup of a session
+## 📊 Evaluation Metrics
 
-## Example Use Case
+The system automatically evaluates implementations using:
 
-Perfect for tasks like:
-- Trying different architectural approaches
-- Implementing features with various libraries
-- Optimizing algorithms with different strategies
-- Exploring multiple UI/UX implementations
+- **Code Changes** (30 points): Has meaningful modifications
+- **Test Success** (50 points): Tests pass successfully  
+- **File Impact** (up to 20 points): Number of files modified
+- **Quality Heuristics**: Additional scoring based on implementation patterns
+
+## 🛠️ Available Tools
+
+### Core Workflow
+- **`create_voting_session`**: Creates worktrees and starts automated execution
+- **`list_sessions`**: Monitor all active sessions and their progress
+- **`evaluate_implementations`**: Get detailed ranking and evaluation of all variants
+- **`auto_select_best`**: Automatically choose and finalize the best implementation
+
+### Manual Control (Optional)
+- **`get_worktree_info`**: Inspect specific worktree details
+- **`mark_implementation_complete`**: Manually mark implementations as done
+- **`finalize_best`**: Manually select a specific implementation
+- **`cleanup_session`**: Force cleanup of sessions
+
+## 💡 Example Use Cases
+
+Perfect for:
+- **Architecture Exploration**: Try different design patterns simultaneously
+- **Library Comparison**: Implement with various frameworks/libraries
+- **Algorithm Optimization**: Test multiple approaches to performance problems
+- **UI/UX Variants**: Create different interface implementations
+- **API Design**: Explore different endpoint structures
+- **Database Integration**: Try various ORM approaches or query strategies
+
+## 🎯 Quick Start Example
+
+```python
+# 1. Start automated voting session
+create_voting_session(
+    task="Add Redis caching to the user service with error handling",
+    num_variants=3
+)
+
+# 2. Check progress (Claude is working automatically)
+list_sessions()
+# Returns: "2/3 complete, 3/3 executed"
+
+# 3. View results and rankings  
+evaluate_implementations(session_id="xyz789")
+# Shows ranked implementations with scores
+
+# 4. Auto-select winner and merge
+auto_select_best(session_id="xyz789", merge_to_main=true)
+# Merges best implementation, cleans up others
+```
+
+## ⚡ Performance Notes
+
+- **Concurrent Execution**: All Claude instances run in parallel
+- **Automatic Cleanup**: Failed/low-quality implementations are removed
+- **Resource Efficient**: Only keeps the winning implementation
+- **Fast Evaluation**: Uses git diff stats and automated test detection
