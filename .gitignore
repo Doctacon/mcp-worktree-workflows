@@ -10,3 +10,4 @@ wheels/
 .venv
 
 test_repo/
+TASK_INSTRUCTIONS.md

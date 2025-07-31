@@ -258,6 +258,7 @@ def create_voting_session(task: str, num_variants: int = 5, target_repo: str = N
         })
         
         # Spawn Terminal window for this worktree
+        print(f"DEBUG: Spawning terminal for {worktree_path}")  # Debug line
         spawn_terminal_for_worktree(worktree_path, task)
     
     response = {
