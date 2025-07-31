@@ -4,22 +4,38 @@ An MCP (Model Context Protocol) server that implements the voting pattern for pa
 
 ## Installation
 
-1. Install dependencies:
+1. Clone this repository and install:
 ```bash
-pip install mcp
+git clone <this-repo>
+cd mcp-servers
+pip install -e .  # or just: pip install mcp>=1.1.0
 ```
 
-2. Add to your Claude Desktop configuration (`~/Library/Application Support/Claude/claude_desktop_config.json`):
+2. Add the server to Claude Code using ONE of these methods:
+
+### Option A: Using Claude Code CLI (Recommended)
+```bash
+# For project-specific use (stored in current project)
+claude mcp add worktree-voting python /path/to/mcp-servers/mcp_worktree_voting.py
+
+# For use across all projects
+claude mcp add --scope user worktree-voting python /path/to/mcp-servers/mcp_worktree_voting.py
+```
+
+### Option B: Manual Configuration
+Add to `.mcp.json` in your project root (for project scope) or `~/.config/claude/mcp.json` (for user scope):
 ```json
 {
   "mcpServers": {
     "worktree-voting": {
       "command": "python",
-      "args": ["/path/to/mcp_worktree_voting.py"]
+      "args": ["/path/to/mcp-servers/mcp_worktree_voting.py"]
     }
   }
 }
 ```
+
+3. Restart Claude Code or use `/mcp` command to reconnect
 
 ## Workflow
 

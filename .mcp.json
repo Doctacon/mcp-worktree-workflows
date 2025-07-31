@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "worktree-voting": {
+      "command": "uv",
+      "args": ["run", "mcp_worktree_voting.py"],
+      "cwd": "/Users/crlough/Code/personal/mcp-servers"
+    }
+  }
+}

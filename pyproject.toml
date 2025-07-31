@@ -5,7 +5,7 @@ description = "MCP server implementations for advanced agent workflows"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "mcp>=0.1.0",
+    "fastmcp",
 ]
 
 [project.scripts]
