@@ -10,3 +10,6 @@ dependencies = [
 
 [project.scripts]
 mcp-worktree-voting = "mcp_worktree_voting:main"
+
+[tool.uv.workspace]
+members = ["test_repo"]

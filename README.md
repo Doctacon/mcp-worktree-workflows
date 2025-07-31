@@ -48,7 +48,8 @@ Add to your MCP configuration file:
 ### 1. Create Session (Everything Starts Here)
 ```
 create_voting_session(
-  task="Implement user authentication with JWT tokens",
+  repository=lombardi
+  task="Rewrite the README.md ",
   num_variants=5
 )
 ```

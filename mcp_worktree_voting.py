@@ -52,39 +52,53 @@ mcp = FastMCP("worktree-voting")
 sessions: Dict[str, WorktreeSession] = {}
 
 
-async def execute_claude_in_worktree(worktree_path: Path, task: str) -> dict:
-    """Execute Claude in a specific worktree"""
+def spawn_terminal_for_worktree(worktree_path: Path, task: str) -> None:
+    """Spawn a new Terminal window and run Claude in the specified worktree"""
     try:
-        # Construct the Claude command
-        cmd = [
-            "claude", 
-            "--print", 
-            "--add-dir", str(worktree_path),
-            f"Implement the following task: {task}"
-        ]
+        # Use osascript to open a new Terminal window and run Claude
+        applescript = f'''
+        tell application "Terminal"
+            do script "cd '{worktree_path}' && claude '{task}' --dangerously-skip-permissions"
+            activate
+        end tell
+        '''
         
-        # Execute Claude
-        process = await asyncio.create_subprocess_exec(
-            *cmd,
-            cwd=worktree_path,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
+        subprocess.run(
+            ["osascript", "-e", applescript],
+            check=False  # Don't raise exception if osascript fails
         )
-        
-        stdout, stderr = await process.communicate()
-        
-        return {
-            "success": process.returncode == 0,
-            "stdout": stdout.decode() if stdout else "",
-            "stderr": stderr.decode() if stderr else "",
-            "returncode": process.returncode
-        }
     except Exception as e:
-        return {
-            "success": False,
-            "error": str(e),
-            "returncode": -1
-        }
+        print(f"Warning: Could not spawn terminal for {worktree_path}: {e}")
+
+
+def create_task_instructions(worktree_path: Path, task: str, session_id: str, variant_id: str) -> str:
+    """Create a task instruction file for Claude to execute"""
+    instructions = f"""# Task Instructions for {variant_id}
+
+## Task
+{task}
+
+## Instructions
+1. Work in this directory: {worktree_path}
+2. Complete the task thoroughly and with high quality
+3. When finished, use the MCP command: mark_implementation_complete("{session_id}", "{variant_id}")
+
+## How to start
+Open a terminal and run:
+```bash
+cd "{worktree_path}"
+claude
+```
+
+Then describe what you want to accomplish based on the task above.
+"""
+    
+    # Write instructions to the worktree
+    instructions_file = worktree_path / "TASK_INSTRUCTIONS.md"
+    with open(instructions_file, 'w') as f:
+        f.write(instructions)
+    
+    return str(instructions_file)
 
 
 def evaluate_implementation(worktree_path: Path, base_branch: str) -> dict:
@@ -161,79 +175,63 @@ def evaluate_implementation(worktree_path: Path, base_branch: str) -> dict:
     return evaluation
 
 
-async def execute_all_worktrees(session_id: str):
-    """Execute Claude in all worktrees for a session"""
+def setup_worktree_instructions(session_id: str):
+    """Create instruction files for all worktrees in a session"""
     if session_id not in sessions:
         return
     
     session = sessions[session_id]
+    instruction_files = []
     
-    # Create tasks for all worktrees
-    tasks = []
     for worktree_id, worktree_path in session.worktrees.items():
-        task = execute_claude_in_worktree(worktree_path, session.task)
-        tasks.append((worktree_id, task))
+        instruction_file = create_task_instructions(worktree_path, session.task, session_id, worktree_id)
+        instruction_files.append(instruction_file)
     
-    # Execute all tasks concurrently
-    results = await asyncio.gather(*[task for _, task in tasks], return_exceptions=True)
-    
-    # Process results
-    for (worktree_id, _), result in zip(tasks, results):
-        try:
-            if isinstance(result, Exception):
-                session.execution_results[worktree_id] = {
-                    "success": False,
-                    "error": f"Task execution failed: {str(result)}",
-                    "returncode": -1
-                }
-            else:
-                session.execution_results[worktree_id] = result
-                
-                # Mark as complete if successful
-                if result.get("success", False):
-                    session.implementations[worktree_id] = True
-                    # Evaluate the implementation
-                    evaluation = evaluate_implementation(session.worktrees[worktree_id], session.base_branch)
-                    session.evaluations[worktree_id] = evaluation
-            
-        except Exception as e:
-            session.execution_results[worktree_id] = {
-                "success": False,
-                "error": f"Task processing failed: {str(e)}",
-                "returncode": -1
-            }
+    return instruction_files
 
 
 @mcp.tool()
-def create_voting_session(task: str, num_variants: int = 5) -> str:
+def create_voting_session(task: str, num_variants: int = 5, target_repo: str = None) -> str:
     """Create a new voting session with multiple worktrees
     
     Args:
         task: The task to implement in multiple variants
         num_variants: Number of worktree variants to create (default: 5)
+        target_repo: Name of the target repository directory (if not provided, looks for single repo)
     """
     session_id = str(uuid.uuid4())[:8]
-    base_path = Path.cwd()
+    parent_path = Path.cwd()
     
-    # Check if we're in a git repository
-    if not (base_path / ".git").exists():
-        return "Error: Not in a git repository"
+    # Find target repository
+    if target_repo:
+        repo_path = parent_path / target_repo
+    else:
+        # Look for a single git repository in current directory
+        git_repos = [d for d in parent_path.iterdir() if d.is_dir() and (d / ".git").exists()]
+        if len(git_repos) == 0:
+            return "Error: No git repository found in current directory"
+        elif len(git_repos) > 1:
+            return f"Error: Multiple git repositories found. Please specify target_repo parameter. Found: {[r.name for r in git_repos]}"
+        repo_path = git_repos[0]
     
-    session = WorktreeSession(session_id, task, num_variants, base_path)
+    if not (repo_path / ".git").exists():
+        return f"Error: {repo_path} is not a git repository"
     
-    # Create worktrees
-    worktrees_dir = base_path / f".worktrees-{session_id}"
+    session = WorktreeSession(session_id, task, num_variants, repo_path)
+    
+    # Create worktrees directory alongside the repo
+    worktrees_dir = parent_path / f"{repo_path.name}.worktrees"
     worktrees_dir.mkdir(exist_ok=True)
     
     for i in range(num_variants):
         variant_id = f"variant-{i+1}"
         branch_name = f"voting-{session_id}-{variant_id}"
-        worktree_path = worktrees_dir / variant_id
+        worktree_path = worktrees_dir / f"{session_id}-{variant_id}"
         
         # Create worktree
         result = subprocess.run(
             ["git", "worktree", "add", "-b", branch_name, str(worktree_path)],
-            cwd=base_path,
+            cwd=repo_path,
             capture_output=True,
             text=True
         )
@@ -246,21 +244,38 @@ def create_voting_session(task: str, num_variants: int = 5) -> str:
     
     sessions[session_id] = session
     
-    # Start executing Claude in each worktree asynchronously
-    asyncio.create_task(execute_all_worktrees(session_id))
+    # Create instruction files for each worktree
+    instruction_files = setup_worktree_instructions(session_id)
+    
+    # Generate terminal commands and spawn Terminal windows
+    terminal_commands = []
+    for worktree_id, worktree_path in session.worktrees.items():
+        command = f'claude "{task}" --dangerously-skip-permissions'
+        terminal_commands.append({
+            "worktree_id": worktree_id,
+            "path": str(worktree_path),
+            "command": f'cd "{worktree_path}" && {command}'
+        })
+        
+        # Spawn Terminal window for this worktree
+        spawn_terminal_for_worktree(worktree_path, task)
     
     response = {
         "session_id": session_id,
         "task": task,
         "num_variants": num_variants,
+        "target_repo": repo_path.name,
         "worktrees": {
             wid: str(path) for wid, path in session.worktrees.items()
         },
-        "status": "Worktrees created. Claude is now executing in each worktree automatically.",
+        "instruction_files": instruction_files,
+        "terminal_commands": terminal_commands,
+        "status": "Worktrees created with task instructions.",
         "instructions": (
-            f"Claude is automatically implementing the task in each worktree. "
-            f"Use list_sessions() to monitor progress, then evaluate_implementations() "
-            f"when all are complete to select the best implementation."
+            f"Open {num_variants} separate terminals and run the commands above to start Claude sessions. "
+            f"Each worktree has a TASK_INSTRUCTIONS.md file with the task details. "
+            f"Use mark_implementation_complete(session_id, worktree_id) when each is done, "
+            f"then evaluate_implementations() to compare and select the best."
         )
     }
     
@@ -542,10 +557,9 @@ def cleanup_session(session_id: str, force: bool = False) -> str:
         subprocess.run(["git", "worktree", "remove", str(path), "--force"], cwd=session.base_path)
         subprocess.run(["git", "branch", "-D", f"voting-{session_id}-{wid}"], cwd=session.base_path)
     
-    # Remove worktrees directory
-    worktrees_dir = session.base_path / f".worktrees-{session_id}"
-    if worktrees_dir.exists():
-        shutil.rmtree(worktrees_dir)
+    # Note: The worktrees directory is now shared across sessions,
+    # so we don't remove it entirely. The git worktree remove command
+    # already removes the individual worktree directories.
     
     del sessions[session_id]
     
@@ -556,5 +570,10 @@ def cleanup_session(session_id: str, force: bool = False) -> str:
     }, indent=2)
 
 
-if __name__ == "__main__":
+def main():
+    """Entry point for the MCP server"""
     mcp.run()
+
+
+if __name__ == "__main__":
+    main()

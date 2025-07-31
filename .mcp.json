@@ -1,9 +1,10 @@
 {
   "mcpServers": {
     "worktree-voting": {
+      "type": "stdio",
       "command": "uv",
-      "args": ["run", "mcp_worktree_voting.py"],
-      "cwd": "/Users/crlough/Code/personal/mcp-servers"
+      "args": ["run", "python", "-m", "mcp_worktree_voting"],
+      "env": {}
     }
   }
 }
