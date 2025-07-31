@@ -1,0 +1,12 @@
+[project]
+name = "mcp-servers"
+version = "0.1.0"
+description = "MCP server implementations for advanced agent workflows"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "mcp>=0.1.0",
+]
+
+[project.scripts]
+mcp-worktree-voting = "mcp_worktree_voting:main"
