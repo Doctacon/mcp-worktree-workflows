@@ -1,0 +1,16 @@
+[
+  {
+    "session_id": "3c07f08f-e544-47b9-898a-f169f651788c",
+    "transcript_path": "/Users/crlough/.claude/projects/-Users-crlough-Code-personal-mcp-servers/3c07f08f-e544-47b9-898a-f169f651788c.jsonl",
+    "cwd": "/Users/crlough/Code/personal/mcp-servers",
+    "hook_event_name": "Stop",
+    "stop_hook_active": false
+  },
+  {
+    "session_id": "264f95b1-8c71-4230-9087-10786f8005da",
+    "transcript_path": "/Users/crlough/.claude/projects/-Users-crlough-Code-personal-mcp-servers/264f95b1-8c71-4230-9087-10786f8005da.jsonl",
+    "cwd": "/Users/crlough/Code/personal/mcp-servers",
+    "hook_event_name": "Stop",
+    "stop_hook_active": false
+  }
+]

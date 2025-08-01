@@ -1,0 +1,78 @@
+[
+  {
+    "type": "summary",
+    "summary": "Local Command Processing with Empty Arguments",
+    "leafUuid": "b2422a6c-583a-4130-bd76-39ac0679be5f"
+  },
+  {
+    "type": "summary",
+    "summary": "API Key Accidentally Exposed in Terminal Output",
+    "leafUuid": "febe440e-17fd-4f3a-b90d-0a503fc4e6fb"
+  },
+  {
+    "parentUuid": null,
+    "isSidechain": false,
+    "userType": "external",
+    "cwd": "/Users/crlough/Code/personal/mcp-servers",
+    "sessionId": "264f95b1-8c71-4230-9087-10786f8005da",
+    "version": "1.0.65",
+    "gitBranch": "main",
+    "type": "system",
+    "content": "\u001b[1mSessionStart:startup\u001b[22m [uv run .claude/hooks/session_start.py] completed successfully",
+    "isMeta": false,
+    "timestamp": "2025-08-01T16:00:55.528Z",
+    "uuid": "6d7ba1ac-fe73-4feb-82fe-7ac97c67c693",
+    "toolUseID": "6c0a03fa-ed86-42dd-b40a-6e89d8dd7cec",
+    "level": "info"
+  },
+  {
+    "parentUuid": "6d7ba1ac-fe73-4feb-82fe-7ac97c67c693",
+    "isSidechain": false,
+    "userType": "external",
+    "cwd": "/Users/crlough/Code/personal/mcp-servers",
+    "sessionId": "264f95b1-8c71-4230-9087-10786f8005da",
+    "version": "1.0.65",
+    "gitBranch": "main",
+    "type": "user",
+    "message": {
+      "role": "user",
+      "content": "can you tell me how to make french toast?"
+    },
+    "uuid": "04c41195-ef3b-4684-920c-6958a70f37c2",
+    "timestamp": "2025-08-01T16:01:05.671Z"
+  },
+  {
+    "parentUuid": "04c41195-ef3b-4684-920c-6958a70f37c2",
+    "isSidechain": false,
+    "userType": "external",
+    "cwd": "/Users/crlough/Code/personal/mcp-servers",
+    "sessionId": "264f95b1-8c71-4230-9087-10786f8005da",
+    "version": "1.0.65",
+    "gitBranch": "main",
+    "message": {
+      "id": "msg_01EEidmxxuWJZ9Nj7sbhWLG3",
+      "type": "message",
+      "role": "assistant",
+      "model": "claude-opus-4-20250514",
+      "content": [
+        {
+          "type": "text",
+          "text": "I'll help you make French toast! Here's a simple recipe:\n\n**Ingredients:**\n- 4 slices of bread (slightly stale works best)\n- 2 eggs\n- 1/4 cup milk\n- 1/2 tsp vanilla extract\n- 1/4 tsp cinnamon\n- Pinch of salt\n- Butter for cooking\n\n**Instructions:**\n1. Whisk eggs, milk, vanilla, cinnamon, and salt in a shallow dish\n2. Heat butter in a skillet over medium heat\n3. Dip each bread slice in egg mixture, coating both sides\n4. Cook 2-3 minutes per side until golden brown\n5. Serve hot with maple syrup, powdered sugar, or fresh fruit\n\n**Tips:**\n- Use thick-cut bread like brioche or challah\n- Don't oversoak the bread\n- Keep cooked slices warm in a 200\u00b0F oven while finishing the batch"
+        }
+      ],
+      "stop_reason": null,
+      "stop_sequence": null,
+      "usage": {
+        "input_tokens": 4,
+        "cache_creation_input_tokens": 17050,
+        "cache_read_input_tokens": 0,
+        "output_tokens": 221,
+        "service_tier": "standard"
+      }
+    },
+    "requestId": "req_011CRhGasRy6Bxew8qF82ZuB",
+    "type": "assistant",
+    "uuid": "3966910f-891c-4e79-9759-99c62b1be188",
+    "timestamp": "2025-08-01T16:01:11.914Z"
+  }
+]

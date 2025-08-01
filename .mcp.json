@@ -1,10 +1,14 @@
 {
-  "mcpServers": {
-    "worktree-voting": {
-      "type": "stdio",
-      "command": "uv",
-      "args": ["run", "python", "-m", "mcp_worktree_voting"],
-      "env": {}
+    "mcpServers": {
+      "worktree-voting": {
+        "type": "stdio",
+        "command": "uv",
+        "args": [
+            "run",
+            "--no-project",
+            "/Users/crlough/Code/personal/mcp-servers/worktree_workflows.py"
+        ],
+        "env": {}
+      }
     }
-  }
 }
