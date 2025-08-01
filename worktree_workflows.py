@@ -333,17 +333,20 @@ async def monitor_orchestrated_session(session_id: str, worktrees: dict, main_ta
     """Monitor orchestrated worktrees and combine results when all are complete"""
     print(f"Starting monitoring for orchestrated session {session_id}")
     
-    # For orchestrated sessions, we need a different completion tracking mechanism
-    # Since they don't use the WorktreeSession class, we'll check for status files
+    # Use the same log-based completion detection as voting
+    completion_status = {wid: False for wid in worktrees.keys()}
     
     while True:
         completed_count = 0
         
         for worktree_id, worktree_info in worktrees.items():
-            worktree_path = Path(worktree_info["path"])
-            status_file = worktree_path / ".task_complete"
+            if not completion_status[worktree_id]:  # Not yet marked complete
+                worktree_path = Path(worktree_info["path"])
+                if check_log_completion(worktree_path):
+                    print(f"Log-based completion detected for {worktree_id}")
+                    completion_status[worktree_id] = True
             
-            if status_file.exists():
+            if completion_status[worktree_id]:
                 completed_count += 1
         
         print(f"Orchestrated session {session_id}: {completed_count}/{len(worktrees)} complete")
@@ -353,7 +356,7 @@ async def monitor_orchestrated_session(session_id: str, worktrees: dict, main_ta
             print(f"All subtasks complete for session {session_id}. Combining results...")
             
             try:
-                # TODO: Implement orchestrated combination logic
+                # Combine orchestrated results intelligently
                 result = combine_orchestrated_results(session_id, worktrees, main_task)
                 print(f"Orchestration result: {result}")
                 
@@ -373,30 +376,103 @@ async def monitor_orchestrated_session(session_id: str, worktrees: dict, main_ta
     print(f"Orchestration monitoring ended for session {session_id}")
 
 
-def combine_orchestrated_results(session_id: str, worktrees: dict, main_task: str) -> str:
-    """Combine results from all orchestrated worktrees into main branch"""
-    # This is a placeholder - we'll implement the full logic later
-    results = []
+def analyze_orchestrated_implementations(session_id: str, worktrees: dict, main_task: str) -> dict:
+    """Analyze all orchestrated implementations for intelligent combination"""
+    implementations = []
     
     for worktree_id, worktree_info in worktrees.items():
         worktree_path = Path(worktree_info["path"])
-        branch_name = worktree_info["branch"]
         
-        # Get changes from each worktree
-        # TODO: Implement git diff analysis and intelligent merging
-        results.append({
+        # Get basic analysis
+        analysis = analyze_implementation_basic(worktree_path, "main")  # Use main as base branch
+        
+        # Get file contents of changed files
+        file_contents = {}
+        for filename in analysis.get("file_list", []):
+            try:
+                file_path = worktree_path / filename
+                if file_path.exists():
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        file_contents[filename] = f.read()[:2000]  # Limit to 2000 chars
+            except Exception:
+                file_contents[filename] = "[Could not read file]"
+        
+        # Get execution log
+        log_content = ""
+        log_file = worktree_path / "execution.log"
+        if log_file.exists():
+            try:
+                with open(log_file, 'r') as f:
+                    log_content = f.read()
+            except Exception:
+                log_content = "[Could not read log]"
+        
+        implementations.append({
             "worktree_id": worktree_id,
-            "branch": branch_name,
             "path": str(worktree_path),
-            "subtask": worktree_info["subtask"]
+            "subtask": worktree_info["subtask"],
+            "branch": worktree_info["branch"],
+            "analysis": analysis,
+            "file_contents": file_contents,
+            "execution_log": log_content
         })
     
-    return json.dumps({
-        "status": "combined",
+    return {
         "session_id": session_id,
         "main_task": main_task,
-        "combined_results": results,
-        "message": f"Combined {len(results)} subtask implementations"
+        "implementations": implementations,
+        "status": "ready_for_combination"
+    }
+
+
+def combine_orchestrated_results(session_id: str, worktrees: dict, main_task: str) -> str:
+    """Combine results from all orchestrated worktrees intelligently"""
+    # Get detailed analysis of all implementations
+    analysis_data = analyze_orchestrated_implementations(session_id, worktrees, main_task)
+    
+    # Prepare Claude combination prompt
+    combination_prompt = f"""Main Task: {main_task}
+
+I need you to intelligently combine the results from {len(worktrees)} subtask implementations. 
+
+For each subtask implementation, consider:
+- What files were changed and how
+- How the subtask contributes to the overall main task
+- Any conflicts or overlaps between implementations
+- The execution logs showing what was accomplished
+
+Please provide a strategy for combining these implementations into a cohesive solution that accomplishes the main task.
+
+Subtask Implementations:
+"""
+    
+    for impl in analysis_data["implementations"]:
+        combination_prompt += f"\n=== {impl['worktree_id']}: {impl['subtask']} ===\n"
+        combination_prompt += f"Files changed: {impl['analysis'].get('files_changed', 0)}\n"
+        combination_prompt += f"Lines added: {impl['analysis'].get('lines_added', 0)}\n"
+        combination_prompt += f"Changed files: {', '.join(impl['analysis'].get('file_list', []))}\n"
+        
+        if impl['file_contents']:
+            combination_prompt += "\nFile contents:\n"
+            for filename, content in impl['file_contents'].items():
+                combination_prompt += f"\n--- {filename} ---\n{content}\n"
+        
+        if impl['execution_log']:
+            combination_prompt += f"\nExecution log:\n{impl['execution_log']}\n"
+    
+    return json.dumps({
+        "session_id": session_id,
+        "main_task": main_task,
+        "status": "ready_for_combination",
+        "implementations": analysis_data["implementations"],
+        "combination_prompt": combination_prompt,
+        "next_steps": [
+            "1. Main Claude will analyze all subtask implementations",
+            "2. Determine the best strategy for combining results",
+            "3. Execute the combination strategy",
+            "4. Create final combined implementation"
+        ],
+        "usage": f"Use the combination_prompt to intelligently merge all subtask results for session {session_id}"
     }, indent=2)
 
 
@@ -859,6 +935,69 @@ def create_adhoc_worktree(task: str, target_repo: str = None) -> str:
 
 
 @mcp.tool()
+def create_intelligent_orchestration(task: str, target_repo: str = None) -> str:
+    """Create orchestrated worktrees with intelligent task breakdown by main Claude
+    
+    Args:
+        task: The main task to break down and execute
+        target_repo: Name of the target repository directory (if not provided, looks for single repo)
+    """
+    # Prepare task breakdown prompt for main Claude
+    breakdown_prompt = f"""Task: {task}
+
+I need you to intelligently break down this task into 3-6 independent subtasks that can be executed in parallel worktrees.
+
+Requirements:
+- Each subtask should be self-contained and executable independently
+- Subtasks should collectively accomplish the main task when combined
+- Each subtask should be specific and actionable
+- Avoid dependencies between subtasks where possible
+
+Please provide:
+1. A brief analysis of the main task
+2. A list of 3-6 specific subtasks 
+3. A brief explanation of how these subtasks will combine to complete the main task
+
+Format your response as a JSON object with this structure:
+{{
+    "analysis": "Brief analysis of the main task",
+    "subtasks": [
+        "Subtask 1 description",
+        "Subtask 2 description", 
+        "Subtask 3 description"
+    ],
+    "combination_strategy": "How subtasks will be combined"
+}}
+"""
+    
+    return json.dumps({
+        "main_task": task,
+        "target_repo": target_repo or "auto-detect",
+        "status": "awaiting_task_breakdown",
+        "breakdown_prompt": breakdown_prompt,
+        "next_steps": [
+            "1. Main Claude will analyze the task and break it down into subtasks",
+            "2. Create worktrees for each subtask automatically", 
+            "3. Execute subtasks in parallel",
+            "4. Combine results intelligently when all complete"
+        ],
+        "usage": "Use the breakdown_prompt to analyze the task and provide subtask breakdown"
+    }, indent=2)
+
+
+@mcp.tool()
+def execute_orchestrated_breakdown(task: str, subtasks, target_repo: str = None) -> str:
+    """Execute orchestrated worktrees after task has been broken down
+    
+    Args:
+        task: The main task description
+        subtasks: List of subtasks from intelligent breakdown
+        target_repo: Name of the target repository directory
+    """
+    return create_orchestrated_worktrees(task, subtasks, target_repo)
+
+
+@mcp.tool()
 def create_orchestrated_worktrees(task: str, subtasks: list[str], target_repo: str = None) -> str:
     """Create multiple worktrees for subtasks with orchestrated execution
     
@@ -927,7 +1066,8 @@ def create_orchestrated_worktrees(task: str, subtasks: list[str], target_repo: s
             "subtask": subtask
         }
         
-        # Create task instructions for subtask
+        # Create task instructions for subtask using same system as voting
+        log_file = worktree_path / "execution.log"
         instructions = f"""# Orchestrated Task: Subtask {i+1}
 
 ## Main Task
@@ -940,23 +1080,29 @@ def create_orchestrated_worktrees(task: str, subtasks: list[str], target_repo: s
 1. Work in this directory: {worktree_path}
 2. Focus only on your specific subtask
 3. Complete the subtask thoroughly and with high quality
-4. When finished, create a completion file: `touch .task_complete`
+4. Completion logging is automatic - no manual action required
 5. Your work will be combined with other subtasks to complete the main task
+
+## Automatic Completion Detection
+The system will automatically write "TASK COMPLETED SUCCESSFULLY" to execution.log when the Claude session ends.
+No manual completion signal is required.
+
+## Execution Log
+All output will be logged to: {log_file}
 
 ## How to start
 Open a terminal and run:
 ```bash
 cd "{worktree_path}"
-claude
+echo "TASK STARTED - $(date)" >> execution.log
+claude "{subtask}" --dangerously-skip-permissions 2>&1 | tee -a execution.log
+echo "TASK COMPLETED SUCCESSFULLY - $(date)" >> execution.log
 ```
 
-Then describe what you want to accomplish based on the subtask above.
+The Claude session will run and completion will be logged automatically.
 
-## When done
-Run this command to signal completion:
-```bash
-touch .task_complete
-```
+## Completion Detection
+The system monitors execution.log for "TASK COMPLETED SUCCESSFULLY" to detect when subtasks finish.
 """
         
         # Write instructions to the worktree
@@ -964,16 +1110,26 @@ touch .task_complete
         with open(instructions_file, 'w') as f:
             f.write(instructions)
         
+        # Initialize log file like voting system
+        with open(log_file, 'w') as f:
+            f.write(f"WORKTREE INITIALIZED - {datetime.now().isoformat()}\n")
+            f.write(f"Session ID: {session_id}\n")
+            f.write(f"Subtask ID: {worktree_id}\n")
+            f.write(f"Main Task: {task}\n")
+            f.write(f"Subtask: {subtask}\n")
+            f.write("=" * 80 + "\n")
+        
         instruction_files.append(str(instructions_file))
         
-        command = f'claude "{subtask}" --dangerously-skip-permissions'
+        # Use same automatic completion system as voting
+        command = f'echo "TASK STARTED - $(date)" >> execution.log && claude "{subtask}" --dangerously-skip-permissions 2>&1 | tee -a execution.log; echo "TASK COMPLETED SUCCESSFULLY - $(date)" >> execution.log'
         terminal_commands.append({
             "worktree_id": worktree_id,
             "path": str(worktree_path),
             "command": f'cd "{worktree_path}" && {command}'
         })
         
-        # Spawn Terminal window for this subtask
+        # Spawn Terminal window for this subtask with automatic completion
         spawn_terminal_for_worktree(worktree_path, subtask)
     
     response = {
