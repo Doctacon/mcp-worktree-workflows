@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
-MCP Server for Git Worktree Voting Pattern
+MCP Server for Git Worktree Workflows
 
-Implements the voting pattern from Anthropic's agent workflows using git worktrees.
-Allows creating multiple worktree variants, implementing solutions in parallel,
-evaluating them, and selecting the best one.
+Implements multiple development workflows using git worktrees:
+- Voting pattern: Create multiple implementations and select the best
+- Ad hoc tasks: Single worktree for quick development
+- Orchestrated subtasks: Break complex tasks into parallel worktrees
 """
 
 import asyncio
@@ -61,7 +62,7 @@ def _get_branch_name(session_id: str, worktree_id: str) -> str:
 
 
 # Initialize FastMCP
-mcp = FastMCP("worktree-voting")
+mcp = FastMCP("worktree-workflows")
 
 # Global sessions store
 sessions: Dict[str, WorktreeSession] = {}
@@ -206,7 +207,7 @@ def setup_worktree_instructions(session_id: str):
 
 
 @mcp.tool()
-def create_voting_session(task: str, num_variants: int = 5, target_repo: str = None) -> str:
+def create_voting_worktrees(task: str, num_variants: int = 5, target_repo: str = None) -> str:
     """Create a new voting session with multiple worktrees
     
     Args:
