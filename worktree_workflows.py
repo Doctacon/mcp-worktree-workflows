@@ -74,10 +74,10 @@ monitoring_tasks: Dict[str, asyncio.Task] = {}
 def spawn_terminal_for_worktree(worktree_path: Path, task: str) -> None:
     """Spawn a new Terminal window and run Claude in the specified worktree"""
     try:
-        # Use osascript to open a new Terminal window and run Claude
+        # Use osascript to open a new Terminal window and run Claude with automatic completion logging
         applescript = f'''
         tell application "Terminal"
-            do script "cd '{worktree_path}' && claude '{task}' --dangerously-skip-permissions"
+            do script "cd '{worktree_path}' && echo 'TASK STARTED - '$(date) >> execution.log && claude '{task}' --dangerously-skip-permissions 2>&1 | tee -a execution.log; echo 'TASK COMPLETED SUCCESSFULLY - '$(date) >> execution.log"
             activate
         end tell
         '''
@@ -92,6 +92,8 @@ def spawn_terminal_for_worktree(worktree_path: Path, task: str) -> None:
 
 def create_task_instructions(worktree_path: Path, task: str, session_id: str, variant_id: str) -> str:
     """Create a task instruction file for Claude to execute"""
+    log_file = worktree_path / "execution.log"
+    
     instructions = f"""# Task Instructions for {variant_id}
 
 ## Task
@@ -100,16 +102,29 @@ def create_task_instructions(worktree_path: Path, task: str, session_id: str, va
 ## Instructions
 1. Work in this directory: {worktree_path}
 2. Complete the task thoroughly and with high quality
-3. When finished, use the MCP command: mark_implementation_complete("{session_id}", "{variant_id}")
+3. Completion logging is automatic - no manual action required
+4. Alternative: Use MCP command if available: mark_implementation_complete("{session_id}", "{variant_id}")
+
+## Automatic Completion Detection
+The system will automatically write "TASK COMPLETED SUCCESSFULLY" to execution.log when the Claude session ends.
+No manual completion signal is required.
+
+## Execution Log
+All output will be logged to: {log_file}
 
 ## How to start
 Open a terminal and run:
 ```bash
 cd "{worktree_path}"
-claude
+echo "TASK STARTED - $(date)" >> execution.log
+claude "{task}" --dangerously-skip-permissions 2>&1 | tee -a execution.log
+echo "TASK COMPLETED SUCCESSFULLY - $(date)" >> execution.log
 ```
 
-Then describe what you want to accomplish based on the task above.
+The Claude session will run and completion will be logged automatically.
+
+## Completion Detection
+The system monitors execution.log for "TASK COMPLETED SUCCESSFULLY" to detect when tasks finish.
 """
     
     # Write instructions to the worktree
@@ -117,7 +132,30 @@ Then describe what you want to accomplish based on the task above.
     with open(instructions_file, 'w') as f:
         f.write(instructions)
     
+    # Initialize log file
+    with open(log_file, 'w') as f:
+        f.write(f"WORKTREE INITIALIZED - {datetime.now().isoformat()}\n")
+        f.write(f"Session ID: {session_id}\n")
+        f.write(f"Variant ID: {variant_id}\n")
+        f.write(f"Task: {task}\n")
+        f.write("=" * 80 + "\n")
+    
     return str(instructions_file)
+
+
+def check_log_completion(worktree_path: Path) -> bool:
+    """Check if worktree has completed based on log file"""
+    log_file = worktree_path / "execution.log"
+    
+    if not log_file.exists():
+        return False
+    
+    try:
+        with open(log_file, 'r') as f:
+            content = f.read()
+            return "TASK COMPLETED SUCCESSFULLY" in content
+    except Exception:
+        return False
 
 
 def evaluate_implementation(worktree_path: Path, base_branch: str) -> dict:
@@ -200,6 +238,14 @@ async def monitor_voting_session(session_id: str):
     
     while session_id in sessions:
         session = sessions[session_id]
+        
+        # Check both MCP-based and log-based completion
+        for worktree_id, worktree_path in session.worktrees.items():
+            if not session.implementations[worktree_id]:  # Not marked complete via MCP
+                if check_log_completion(worktree_path):
+                    print(f"Log-based completion detected for {worktree_id}")
+                    session.implementations[worktree_id] = True
+        
         completed = sum(1 for done in session.implementations.values() if done)
         
         print(f"Session {session_id}: {completed}/{session.num_variants} complete")
@@ -378,7 +424,8 @@ def create_voting_worktrees(task: str, num_variants: int = 5, target_repo: str =
     # Generate terminal commands and spawn Terminal windows
     terminal_commands = []
     for worktree_id, worktree_path in session.worktrees.items():
-        command = f'claude "{task}" --dangerously-skip-permissions'
+        # Use a command that always writes completion signal when finished
+        command = f'''echo "TASK STARTED - $(date)" >> execution.log && claude "{task}" --dangerously-skip-permissions 2>&1 | tee -a execution.log; echo "TASK COMPLETED SUCCESSFULLY - $(date)" >> execution.log'''
         terminal_commands.append({
             "worktree_id": worktree_id,
             "path": str(worktree_path),
@@ -453,6 +500,11 @@ def get_worktree_info(session_id: str, worktree_id: Optional[str] = None) -> str
     
     session = sessions[session_id]
     
+    # Update completion status based on logs before reporting
+    for wid, path in session.worktrees.items():
+        if not session.implementations[wid] and check_log_completion(path):
+            session.implementations[wid] = True
+    
     if worktree_id:
         if worktree_id not in session.worktrees:
             return f"Worktree {worktree_id} not found"
@@ -461,6 +513,7 @@ def get_worktree_info(session_id: str, worktree_id: Optional[str] = None) -> str
             "worktree_id": worktree_id,
             "path": str(session.worktrees[worktree_id]),
             "completed": session.implementations[worktree_id],
+            "log_completion": check_log_completion(session.worktrees[worktree_id]),
             "branch": session._get_branch_name(session_id, worktree_id)
         }
     else:
@@ -472,6 +525,7 @@ def get_worktree_info(session_id: str, worktree_id: Optional[str] = None) -> str
                     "id": wid,
                     "path": str(path),
                     "completed": session.implementations[wid],
+                    "log_completion": check_log_completion(path),
                     "branch": session._get_branch_name(session_id, wid)
                 }
                 for wid, path in session.worktrees.items()
