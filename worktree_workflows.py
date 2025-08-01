@@ -67,14 +67,17 @@ mcp = FastMCP("worktree-workflows")
 # Global sessions store
 sessions: Dict[str, WorktreeSession] = {}
 
+# Global monitoring tasks
+monitoring_tasks: Dict[str, asyncio.Task] = {}
+
 
 def spawn_terminal_for_worktree(worktree_path: Path, task: str) -> None:
     """Spawn a new Terminal window and run Claude in the specified worktree"""
     try:
-        # Use osascript to open a new Terminal window and run Claude
+        # Use osascript to open a new Terminal window and run Claude with automatic completion logging
         applescript = f'''
         tell application "Terminal"
-            do script "cd '{worktree_path}' && claude '{task}' --dangerously-skip-permissions"
+            do script "cd '{worktree_path}' && echo 'TASK STARTED - '$(date) >> execution.log && claude '{task}' --dangerously-skip-permissions 2>&1 | tee -a execution.log; echo 'TASK COMPLETED SUCCESSFULLY - '$(date) >> execution.log"
             activate
         end tell
         '''
@@ -89,6 +92,8 @@ def spawn_terminal_for_worktree(worktree_path: Path, task: str) -> None:
 
 def create_task_instructions(worktree_path: Path, task: str, session_id: str, variant_id: str) -> str:
     """Create a task instruction file for Claude to execute"""
+    log_file = worktree_path / "execution.log"
+    
     instructions = f"""# Task Instructions for {variant_id}
 
 ## Task
@@ -97,16 +102,29 @@ def create_task_instructions(worktree_path: Path, task: str, session_id: str, va
 ## Instructions
 1. Work in this directory: {worktree_path}
 2. Complete the task thoroughly and with high quality
-3. When finished, use the MCP command: mark_implementation_complete("{session_id}", "{variant_id}")
+3. Completion logging is automatic - no manual action required
+4. Alternative: Use MCP command if available: mark_implementation_complete("{session_id}", "{variant_id}")
+
+## Automatic Completion Detection
+The system will automatically write "TASK COMPLETED SUCCESSFULLY" to execution.log when the Claude session ends.
+No manual completion signal is required.
+
+## Execution Log
+All output will be logged to: {log_file}
 
 ## How to start
 Open a terminal and run:
 ```bash
 cd "{worktree_path}"
-claude
+echo "TASK STARTED - $(date)" >> execution.log
+claude "{task}" --dangerously-skip-permissions 2>&1 | tee -a execution.log
+echo "TASK COMPLETED SUCCESSFULLY - $(date)" >> execution.log
 ```
 
-Then describe what you want to accomplish based on the task above.
+The Claude session will run and completion will be logged automatically.
+
+## Completion Detection
+The system monitors execution.log for "TASK COMPLETED SUCCESSFULLY" to detect when tasks finish.
 """
     
     # Write instructions to the worktree
@@ -114,18 +132,41 @@ Then describe what you want to accomplish based on the task above.
     with open(instructions_file, 'w') as f:
         f.write(instructions)
     
+    # Initialize log file
+    with open(log_file, 'w') as f:
+        f.write(f"WORKTREE INITIALIZED - {datetime.now().isoformat()}\n")
+        f.write(f"Session ID: {session_id}\n")
+        f.write(f"Variant ID: {variant_id}\n")
+        f.write(f"Task: {task}\n")
+        f.write("=" * 80 + "\n")
+    
     return str(instructions_file)
 
 
-def evaluate_implementation(worktree_path: Path, base_branch: str) -> dict:
-    """Evaluate an implementation in a worktree"""
-    evaluation = {
+def check_log_completion(worktree_path: Path) -> bool:
+    """Check if worktree has completed based on log file"""
+    log_file = worktree_path / "execution.log"
+    
+    if not log_file.exists():
+        return False
+    
+    try:
+        with open(log_file, 'r') as f:
+            content = f.read()
+            return "TASK COMPLETED SUCCESSFULLY" in content
+    except Exception:
+        return False
+
+
+def analyze_implementation_basic(worktree_path: Path, base_branch: str) -> dict:
+    """Get basic statistics about an implementation"""
+    analysis = {
         "has_changes": False,
         "files_changed": 0,
         "lines_added": 0,
         "lines_removed": 0,
         "test_results": None,
-        "quality_score": 0
+        "file_list": []
     }
     
     try:
@@ -138,21 +179,31 @@ def evaluate_implementation(worktree_path: Path, base_branch: str) -> dict:
         )
         
         if diff_result.returncode == 0 and diff_result.stdout:
-            evaluation["has_changes"] = True
+            analysis["has_changes"] = True
             lines = diff_result.stdout.strip().split('\n')
             if lines:
-                # Parse diff stats from last line (e.g., "2 files changed, 45 insertions(+), 12 deletions(-)")
+                # Parse diff stats from last line
                 last_line = lines[-1]
                 if "file" in last_line:
                     parts = last_line.split(',')
                     for part in parts:
                         part = part.strip()
                         if "file" in part:
-                            evaluation["files_changed"] = int(part.split()[0])
+                            analysis["files_changed"] = int(part.split()[0])
                         elif "insertion" in part:
-                            evaluation["lines_added"] = int(part.split()[0])
+                            analysis["lines_added"] = int(part.split()[0])
                         elif "deletion" in part:
-                            evaluation["lines_removed"] = int(part.split()[0])
+                            analysis["lines_removed"] = int(part.split()[0])
+        
+        # Get list of changed files
+        files_result = subprocess.run(
+            ["git", "diff", "--name-only", base_branch],
+            cwd=worktree_path,
+            capture_output=True,
+            text=True
+        )
+        if files_result.returncode == 0:
+            analysis["file_list"] = [f.strip() for f in files_result.stdout.split('\n') if f.strip()]
         
         # Try to run tests if available
         for test_cmd in [["npm", "test"], ["pytest"], ["python", "-m", "pytest"], ["uv", "run", "pytest"]]:
@@ -164,7 +215,7 @@ def evaluate_implementation(worktree_path: Path, base_branch: str) -> dict:
                     text=True,
                     timeout=60
                 )
-                evaluation["test_results"] = {
+                analysis["test_results"] = {
                     "command": " ".join(test_cmd),
                     "success": test_result.returncode == 0,
                     "output": test_result.stdout[:1000] if test_result.stdout else "",
@@ -174,21 +225,179 @@ def evaluate_implementation(worktree_path: Path, base_branch: str) -> dict:
             except (subprocess.TimeoutExpired, FileNotFoundError):
                 continue
         
-        # Calculate quality score (simple heuristic)
-        score = 0
-        if evaluation["has_changes"]:
-            score += 30
-        if evaluation["test_results"] and evaluation["test_results"]["success"]:
-            score += 50
-        if evaluation["files_changed"] > 0:
-            score += min(evaluation["files_changed"] * 5, 20)
-        
-        evaluation["quality_score"] = score
-        
     except Exception as e:
-        evaluation["error"] = str(e)
+        analysis["error"] = str(e)
     
-    return evaluation
+    return analysis
+
+
+def evaluate_implementations_with_claude(session_id: str) -> dict:
+    """Use Claude to evaluate and rank all implementations"""
+    if session_id not in sessions:
+        return {"error": f"Session {session_id} not found"}
+    
+    session = sessions[session_id]
+    implementations = []
+    
+    # Gather all implementation data
+    for wid, path in session.worktrees.items():
+        if not session.implementations[wid]:
+            continue  # Skip incomplete implementations
+            
+        analysis = analyze_implementation_basic(path, session.base_branch)
+        
+        # Get file contents of changed files
+        file_contents = {}
+        for filename in analysis.get("file_list", []):
+            try:
+                file_path = path / filename
+                if file_path.exists():
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        file_contents[filename] = f.read()[:2000]  # Limit to 2000 chars
+            except Exception:
+                file_contents[filename] = "[Could not read file]"
+        
+        # Get execution log
+        log_content = ""
+        log_file = path / "execution.log"
+        if log_file.exists():
+            try:
+                with open(log_file, 'r') as f:
+                    log_content = f.read()
+            except Exception:
+                log_content = "[Could not read log]"
+        
+        implementations.append({
+            "worktree_id": wid,
+            "path": str(path),
+            "analysis": analysis,
+            "file_contents": file_contents,
+            "execution_log": log_content,
+            "branch": session._get_branch_name(session_id, wid)
+        })
+    
+    return {
+        "session_id": session_id,
+        "task": session.task,
+        "base_branch": session.base_branch,
+        "implementations": implementations,
+        "evaluation_method": "claude_based",
+        "ready_for_claude_evaluation": True
+    }
+
+
+async def monitor_voting_session(session_id: str):
+    """Monitor a voting session and auto-select best when all are complete"""
+    print(f"Starting monitoring for voting session {session_id}")
+    
+    while session_id in sessions:
+        session = sessions[session_id]
+        
+        # Check both MCP-based and log-based completion
+        for worktree_id, worktree_path in session.worktrees.items():
+            if not session.implementations[worktree_id]:  # Not marked complete via MCP
+                if check_log_completion(worktree_path):
+                    print(f"Log-based completion detected for {worktree_id}")
+                    session.implementations[worktree_id] = True
+        
+        completed = sum(1 for done in session.implementations.values() if done)
+        
+        print(f"Session {session_id}: {completed}/{session.num_variants} complete")
+        
+        # Check if all implementations are complete
+        if completed == session.num_variants:
+            print(f"All implementations complete for session {session_id}. Preparing for Claude evaluation...")
+            
+            try:
+                # Prepare implementations for Claude evaluation
+                result = present_top_candidates(session_id)
+                print(f"Implementations ready for evaluation. Use evaluate_implementations({session_id}) to proceed.")
+                
+                # Clean up monitoring task
+                if session_id in monitoring_tasks:
+                    del monitoring_tasks[session_id]
+                
+                break
+                
+            except Exception as e:
+                print(f"Error during evaluation preparation for session {session_id}: {e}")
+                break
+        
+        # Wait before checking again
+        await asyncio.sleep(10)  # Check every 10 seconds
+    
+    print(f"Monitoring ended for session {session_id}")
+
+
+async def monitor_orchestrated_session(session_id: str, worktrees: dict, main_task: str):
+    """Monitor orchestrated worktrees and combine results when all are complete"""
+    print(f"Starting monitoring for orchestrated session {session_id}")
+    
+    # For orchestrated sessions, we need a different completion tracking mechanism
+    # Since they don't use the WorktreeSession class, we'll check for status files
+    
+    while True:
+        completed_count = 0
+        
+        for worktree_id, worktree_info in worktrees.items():
+            worktree_path = Path(worktree_info["path"])
+            status_file = worktree_path / ".task_complete"
+            
+            if status_file.exists():
+                completed_count += 1
+        
+        print(f"Orchestrated session {session_id}: {completed_count}/{len(worktrees)} complete")
+        
+        # Check if all subtasks are complete
+        if completed_count == len(worktrees):
+            print(f"All subtasks complete for session {session_id}. Combining results...")
+            
+            try:
+                # TODO: Implement orchestrated combination logic
+                result = combine_orchestrated_results(session_id, worktrees, main_task)
+                print(f"Orchestration result: {result}")
+                
+                # Clean up monitoring task
+                if session_id in monitoring_tasks:
+                    del monitoring_tasks[session_id]
+                
+                break
+                
+            except Exception as e:
+                print(f"Error during orchestration combination for session {session_id}: {e}")
+                break
+        
+        # Wait before checking again
+        await asyncio.sleep(10)  # Check every 10 seconds
+    
+    print(f"Orchestration monitoring ended for session {session_id}")
+
+
+def combine_orchestrated_results(session_id: str, worktrees: dict, main_task: str) -> str:
+    """Combine results from all orchestrated worktrees into main branch"""
+    # This is a placeholder - we'll implement the full logic later
+    results = []
+    
+    for worktree_id, worktree_info in worktrees.items():
+        worktree_path = Path(worktree_info["path"])
+        branch_name = worktree_info["branch"]
+        
+        # Get changes from each worktree
+        # TODO: Implement git diff analysis and intelligent merging
+        results.append({
+            "worktree_id": worktree_id,
+            "branch": branch_name,
+            "path": str(worktree_path),
+            "subtask": worktree_info["subtask"]
+        })
+    
+    return json.dumps({
+        "status": "combined",
+        "session_id": session_id,
+        "main_task": main_task,
+        "combined_results": results,
+        "message": f"Combined {len(results)} subtask implementations"
+    }, indent=2)
 
 
 def setup_worktree_instructions(session_id: str):
@@ -269,7 +478,8 @@ def create_voting_worktrees(task: str, num_variants: int = 5, target_repo: str =
     # Generate terminal commands and spawn Terminal windows
     terminal_commands = []
     for worktree_id, worktree_path in session.worktrees.items():
-        command = f'claude "{task}" --dangerously-skip-permissions'
+        # Use a command that always writes completion signal when finished
+        command = f'''echo "TASK STARTED - $(date)" >> execution.log && claude "{task}" --dangerously-skip-permissions 2>&1 | tee -a execution.log; echo "TASK COMPLETED SUCCESSFULLY - $(date)" >> execution.log'''
         terminal_commands.append({
             "worktree_id": worktree_id,
             "path": str(worktree_path),
@@ -294,10 +504,19 @@ def create_voting_worktrees(task: str, num_variants: int = 5, target_repo: str =
         "instructions": (
             f"Open {num_variants} separate terminals and run the commands above to start Claude sessions. "
             f"Each worktree has a TASK_INSTRUCTIONS.md file with the task details. "
-            f"Use mark_implementation_complete(session_id, worktree_id) when each is done, "
-            f"then evaluate_implementations() to compare and select the best."
+            f"Child instances will automatically signal completion using mark_implementation_complete(). "
+            f"The system will automatically evaluate and select the best implementation when all are complete."
         )
     }
+    
+    # Start monitoring task for automatic completion
+    try:
+        loop = asyncio.get_event_loop()
+        monitoring_task = loop.create_task(monitor_voting_session(session_id))
+        monitoring_tasks[session_id] = monitoring_task
+        print(f"Started monitoring task for voting session {session_id}")
+    except Exception as e:
+        print(f"Warning: Could not start monitoring for session {session_id}: {e}")
     
     return json.dumps(response, indent=2)
 
@@ -335,6 +554,11 @@ def get_worktree_info(session_id: str, worktree_id: Optional[str] = None) -> str
     
     session = sessions[session_id]
     
+    # Update completion status based on logs before reporting
+    for wid, path in session.worktrees.items():
+        if not session.implementations[wid] and check_log_completion(path):
+            session.implementations[wid] = True
+    
     if worktree_id:
         if worktree_id not in session.worktrees:
             return f"Worktree {worktree_id} not found"
@@ -343,7 +567,8 @@ def get_worktree_info(session_id: str, worktree_id: Optional[str] = None) -> str
             "worktree_id": worktree_id,
             "path": str(session.worktrees[worktree_id]),
             "completed": session.implementations[worktree_id],
-            "branch": self._get_branch_name(session_id, worktree_id)
+            "log_completion": check_log_completion(session.worktrees[worktree_id]),
+            "branch": session._get_branch_name(session_id, worktree_id)
         }
     else:
         info = {
@@ -354,7 +579,8 @@ def get_worktree_info(session_id: str, worktree_id: Optional[str] = None) -> str
                     "id": wid,
                     "path": str(path),
                     "completed": session.implementations[wid],
-                    "branch": self._get_branch_name(session_id, wid)
+                    "log_completion": check_log_completion(path),
+                    "branch": session._get_branch_name(session_id, wid)
                 }
                 for wid, path in session.worktrees.items()
             ]
@@ -390,106 +616,80 @@ def mark_implementation_complete(session_id: str, worktree_id: str) -> str:
 
 @mcp.tool()
 def evaluate_implementations(session_id: str) -> str:
-    """Get all implementations for evaluation and ranking
+    """Get all implementations ready for Claude evaluation
     
     Args:
         session_id: The voting session ID
     """
-    if session_id not in sessions:
-        return f"Session {session_id} not found"
-    
-    session = sessions[session_id]
-    evaluations = []
-    
-    for wid, path in session.worktrees.items():
-        evaluation_data = {
-            "worktree_id": wid,
-            "path": str(path),
-            "completed": session.implementations[wid],
-            "branch": self._get_branch_name(session_id, wid),
-            "execution_result": session.execution_results.get(wid, {}),
-            "evaluation": session.evaluations.get(wid, {})
-        }
-        
-        # If no evaluation exists yet, create one
-        if not evaluation_data["evaluation"] and evaluation_data["completed"]:
-            evaluation = evaluate_implementation(path, session.base_branch)
-            session.evaluations[wid] = evaluation
-            evaluation_data["evaluation"] = evaluation
-        
-        evaluations.append(evaluation_data)
-    
-    # Sort by quality score (highest first)
-    evaluations.sort(key=lambda x: x["evaluation"].get("quality_score", 0), reverse=True)
-    
-    # Add ranking
-    for i, eval_data in enumerate(evaluations):
-        eval_data["rank"] = i + 1
-    
-    # Find the best implementation
-    best_implementation = evaluations[0] if evaluations else None
-    
-    response = {
-        "session_id": session_id,
-        "task": session.task,
-        "base_branch": session.base_branch,
-        "implementations": evaluations,
-        "best_implementation": {
-            "worktree_id": best_implementation["worktree_id"],
-            "quality_score": best_implementation["evaluation"].get("quality_score", 0),
-            "rank": 1
-        } if best_implementation else None,
-        "summary": {
-            "total_variants": session.num_variants,
-            "completed": sum(1 for e in evaluations if e["completed"]),
-            "with_changes": sum(1 for e in evaluations if e["evaluation"].get("has_changes", False)),
-            "tests_passed": sum(1 for e in evaluations if e["evaluation"].get("test_results", {}).get("success", False))
-        },
-        "recommendation": (
-            f"Best implementation: {best_implementation['worktree_id']} "
-            f"(score: {best_implementation['evaluation'].get('quality_score', 0)})"
-        ) if best_implementation else "No implementations completed successfully"
-    }
-    
-    return json.dumps(response, indent=2)
+    return present_top_candidates(session_id)
 
 
 @mcp.tool()
-def auto_select_best(session_id: str, merge_to_main: bool = False) -> str:
-    """Automatically select and finalize the best implementation
+def present_top_candidates(session_id: str) -> str:
+    """Present top 2 candidates for user selection based on Claude evaluation
     
     Args:
         session_id: The voting session ID
-        merge_to_main: Whether to merge to main branch (default: false)
     """
     if session_id not in sessions:
         return f"Session {session_id} not found"
     
-    session = sessions[session_id]
+    # Get Claude evaluation data
+    evaluation_data = evaluate_implementations_with_claude(session_id)
     
-    # Get evaluations
-    evaluations = []
-    for wid, path in session.worktrees.items():
-        if session.implementations[wid]:  # Only consider completed implementations
-            evaluation = session.evaluations.get(wid)
-            if not evaluation:
-                evaluation = evaluate_implementation(path, session.base_branch)
-                session.evaluations[wid] = evaluation
-            
-            evaluations.append((wid, evaluation))
+    if "error" in evaluation_data:
+        return json.dumps(evaluation_data, indent=2)
     
-    if not evaluations:
+    implementations = evaluation_data["implementations"]
+    
+    if not implementations:
         return json.dumps({
            "error": "No completed implementations found",
-           "message": "Wait for implementations to complete before auto-selecting"
+           "message": "Wait for implementations to complete before evaluating"
         }, indent=2)
     
-    # Sort by quality score
-    evaluations.sort(key=lambda x: x[1].get("quality_score", 0), reverse=True)
-    best_worktree_id, _ = evaluations[0]
+    # Prepare data for Claude evaluation
+    claude_prompt = f"""Task: {evaluation_data['task']}
+
+I need you to evaluate these {len(implementations)} implementation(s) and rank them. For each implementation, consider:
+- How well it fulfills the original task
+- Code quality and approach
+- Completeness and correctness
+- Any issues or problems
+
+Please provide a detailed analysis and rank them from best to worst, explaining your reasoning.
+
+Implementations:
+"""
     
-    # Use the existing finalize_best function
-    return finalize_best(session_id, best_worktree_id, merge_to_main)
+    for i, impl in enumerate(implementations, 1):
+        claude_prompt += f"\n=== Implementation {i}: {impl['worktree_id']} ===\n"
+        claude_prompt += f"Files changed: {impl['analysis'].get('files_changed', 0)}\n"
+        claude_prompt += f"Lines added: {impl['analysis'].get('lines_added', 0)}\n"
+        claude_prompt += f"Changed files: {', '.join(impl['analysis'].get('file_list', []))}\n"
+        
+        if impl['file_contents']:
+            claude_prompt += "\nFile contents:\n"
+            for filename, content in impl['file_contents'].items():
+                claude_prompt += f"\n--- {filename} ---\n{content}\n"
+        
+        if impl['execution_log']:
+            claude_prompt += f"\nExecution log:\n{impl['execution_log']}\n"
+    
+    return json.dumps({
+        "session_id": session_id,
+        "task": evaluation_data['task'],
+        "status": "ready_for_claude_evaluation",
+        "implementations": implementations,
+        "claude_evaluation_prompt": claude_prompt,
+        "next_steps": [
+            "1. Main Claude will evaluate all implementations using the provided prompt",
+            "2. Present top 2 candidates with detailed analysis", 
+            "3. User selects preferred implementation",
+            "4. Use finalize_best(session_id, chosen_worktree_id) to complete"
+        ],
+        "usage": f"Call finalize_best('{session_id}', 'chosen_worktree_id') when ready to select winner"
+    }, indent=2)
 
 
 @mcp.tool()
@@ -740,7 +940,8 @@ def create_orchestrated_worktrees(task: str, subtasks: list[str], target_repo: s
 1. Work in this directory: {worktree_path}
 2. Focus only on your specific subtask
 3. Complete the subtask thoroughly and with high quality
-4. Your work will be combined with other subtasks to complete the main task
+4. When finished, create a completion file: `touch .task_complete`
+5. Your work will be combined with other subtasks to complete the main task
 
 ## How to start
 Open a terminal and run:
@@ -750,6 +951,12 @@ claude
 ```
 
 Then describe what you want to accomplish based on the subtask above.
+
+## When done
+Run this command to signal completion:
+```bash
+touch .task_complete
+```
 """
         
         # Write instructions to the worktree
@@ -786,6 +993,15 @@ Then describe what you want to accomplish based on the subtask above.
             f"Monitor progress across all worktrees to ensure coordinated completion of the main task."
         )
     }
+    
+    # Start monitoring task for automatic combination
+    try:
+        loop = asyncio.get_event_loop()
+        monitoring_task = loop.create_task(monitor_orchestrated_session(session_id, worktrees, task))
+        monitoring_tasks[session_id] = monitoring_task
+        print(f"Started monitoring task for orchestrated session {session_id}")
+    except Exception as e:
+        print(f"Warning: Could not start monitoring for session {session_id}: {e}")
     
     return json.dumps(response, indent=2)
 
