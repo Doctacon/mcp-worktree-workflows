@@ -1,4 +1,4 @@
-# /voting-status
+# check status of voter worktrees
 
 Check the status of all active voting sessions and evaluate implementations.
 

@@ -1,4 +1,4 @@
-# /voting
+# repository num_voters task_desc
 
 Create multiple worktree implementations using the voting pattern to find the best solution.
 
