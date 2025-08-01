@@ -67,6 +67,9 @@ mcp = FastMCP("worktree-workflows")
 # Global sessions store
 sessions: Dict[str, WorktreeSession] = {}
 
+# Global monitoring tasks
+monitoring_tasks: Dict[str, asyncio.Task] = {}
+
 
 def spawn_terminal_for_worktree(worktree_path: Path, task: str) -> None:
     """Spawn a new Terminal window and run Claude in the specified worktree"""
@@ -191,6 +194,112 @@ def evaluate_implementation(worktree_path: Path, base_branch: str) -> dict:
     return evaluation
 
 
+async def monitor_voting_session(session_id: str):
+    """Monitor a voting session and auto-select best when all are complete"""
+    print(f"Starting monitoring for voting session {session_id}")
+    
+    while session_id in sessions:
+        session = sessions[session_id]
+        completed = sum(1 for done in session.implementations.values() if done)
+        
+        print(f"Session {session_id}: {completed}/{session.num_variants} complete")
+        
+        # Check if all implementations are complete
+        if completed == session.num_variants:
+            print(f"All implementations complete for session {session_id}. Auto-selecting best...")
+            
+            try:
+                # Auto-select the best implementation
+                result = auto_select_best(session_id, merge_to_main=False)
+                print(f"Auto-selection result: {result}")
+                
+                # Clean up monitoring task
+                if session_id in monitoring_tasks:
+                    del monitoring_tasks[session_id]
+                
+                break
+                
+            except Exception as e:
+                print(f"Error during auto-selection for session {session_id}: {e}")
+                break
+        
+        # Wait before checking again
+        await asyncio.sleep(10)  # Check every 10 seconds
+    
+    print(f"Monitoring ended for session {session_id}")
+
+
+async def monitor_orchestrated_session(session_id: str, worktrees: dict, main_task: str):
+    """Monitor orchestrated worktrees and combine results when all are complete"""
+    print(f"Starting monitoring for orchestrated session {session_id}")
+    
+    # For orchestrated sessions, we need a different completion tracking mechanism
+    # Since they don't use the WorktreeSession class, we'll check for status files
+    
+    while True:
+        completed_count = 0
+        
+        for worktree_id, worktree_info in worktrees.items():
+            worktree_path = Path(worktree_info["path"])
+            status_file = worktree_path / ".task_complete"
+            
+            if status_file.exists():
+                completed_count += 1
+        
+        print(f"Orchestrated session {session_id}: {completed_count}/{len(worktrees)} complete")
+        
+        # Check if all subtasks are complete
+        if completed_count == len(worktrees):
+            print(f"All subtasks complete for session {session_id}. Combining results...")
+            
+            try:
+                # TODO: Implement orchestrated combination logic
+                result = combine_orchestrated_results(session_id, worktrees, main_task)
+                print(f"Orchestration result: {result}")
+                
+                # Clean up monitoring task
+                if session_id in monitoring_tasks:
+                    del monitoring_tasks[session_id]
+                
+                break
+                
+            except Exception as e:
+                print(f"Error during orchestration combination for session {session_id}: {e}")
+                break
+        
+        # Wait before checking again
+        await asyncio.sleep(10)  # Check every 10 seconds
+    
+    print(f"Orchestration monitoring ended for session {session_id}")
+
+
+def combine_orchestrated_results(session_id: str, worktrees: dict, main_task: str) -> str:
+    """Combine results from all orchestrated worktrees into main branch"""
+    # This is a placeholder - we'll implement the full logic later
+    results = []
+    
+    for worktree_id, worktree_info in worktrees.items():
+        worktree_path = Path(worktree_info["path"])
+        branch_name = worktree_info["branch"]
+        
+        # Get changes from each worktree
+        # TODO: Implement git diff analysis and intelligent merging
+        results.append({
+            "worktree_id": worktree_id,
+            "branch": branch_name,
+            "path": str(worktree_path),
+            "subtask": worktree_info["subtask"]
+        })
+    
+    return json.dumps({
+        "status": "combined",
+        "session_id": session_id,
+        "main_task": main_task,
+        "combined_results": results,
+        "message": f"Combined {len(results)} subtask implementations"
+    }, indent=2)
+
+
 def setup_worktree_instructions(session_id: str):
     """Create instruction files for all worktrees in a session"""
     if session_id not in sessions:
@@ -294,10 +403,19 @@ def create_voting_worktrees(task: str, num_variants: int = 5, target_repo: str =
         "instructions": (
             f"Open {num_variants} separate terminals and run the commands above to start Claude sessions. "
             f"Each worktree has a TASK_INSTRUCTIONS.md file with the task details. "
-            f"Use mark_implementation_complete(session_id, worktree_id) when each is done, "
-            f"then evaluate_implementations() to compare and select the best."
+            f"Child instances will automatically signal completion using mark_implementation_complete(). "
+            f"The system will automatically evaluate and select the best implementation when all are complete."
         )
     }
+    
+    # Start monitoring task for automatic completion
+    try:
+        loop = asyncio.get_event_loop()
+        monitoring_task = loop.create_task(monitor_voting_session(session_id))
+        monitoring_tasks[session_id] = monitoring_task
+        print(f"Started monitoring task for voting session {session_id}")
+    except Exception as e:
+        print(f"Warning: Could not start monitoring for session {session_id}: {e}")
     
     return json.dumps(response, indent=2)
 
@@ -343,7 +461,7 @@ def get_worktree_info(session_id: str, worktree_id: Optional[str] = None) -> str
             "worktree_id": worktree_id,
             "path": str(session.worktrees[worktree_id]),
             "completed": session.implementations[worktree_id],
-            "branch": self._get_branch_name(session_id, worktree_id)
+            "branch": session._get_branch_name(session_id, worktree_id)
         }
     else:
         info = {
@@ -354,7 +472,7 @@ def get_worktree_info(session_id: str, worktree_id: Optional[str] = None) -> str
                     "id": wid,
                     "path": str(path),
                     "completed": session.implementations[wid],
-                    "branch": self._get_branch_name(session_id, wid)
+                    "branch": session._get_branch_name(session_id, wid)
                 }
                 for wid, path in session.worktrees.items()
             ]
@@ -406,7 +524,7 @@ def evaluate_implementations(session_id: str) -> str:
             "worktree_id": wid,
             "path": str(path),
             "completed": session.implementations[wid],
-            "branch": self._get_branch_name(session_id, wid),
+            "branch": session._get_branch_name(session_id, wid),
             "execution_result": session.execution_results.get(wid, {}),
             "evaluation": session.evaluations.get(wid, {})
         }
@@ -740,7 +858,8 @@ def create_orchestrated_worktrees(task: str, subtasks: list[str], target_repo: s
 1. Work in this directory: {worktree_path}
 2. Focus only on your specific subtask
 3. Complete the subtask thoroughly and with high quality
-4. Your work will be combined with other subtasks to complete the main task
+4. When finished, create a completion file: `touch .task_complete`
+5. Your work will be combined with other subtasks to complete the main task
 
 ## How to start
 Open a terminal and run:
@@ -750,6 +869,12 @@ claude
 ```
 
 Then describe what you want to accomplish based on the subtask above.
+
+## When done
+Run this command to signal completion:
+```bash
+touch .task_complete
+```
 """
         
         # Write instructions to the worktree
@@ -786,6 +911,15 @@ Then describe what you want to accomplish based on the subtask above.
             f"Monitor progress across all worktrees to ensure coordinated completion of the main task."
         )
     }
+    
+    # Start monitoring task for automatic combination
+    try:
+        loop = asyncio.get_event_loop()
+        monitoring_task = loop.create_task(monitor_orchestrated_session(session_id, worktrees, task))
+        monitoring_tasks[session_id] = monitoring_task
+        print(f"Started monitoring task for orchestrated session {session_id}")
+    except Exception as e:
+        print(f"Warning: Could not start monitoring for session {session_id}: {e}")
     
     return json.dumps(response, indent=2)
 
