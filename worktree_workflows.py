@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
-MCP Server for Git Worktree Voting Pattern
+MCP Server for Git Worktree Workflows
 
-Implements the voting pattern from Anthropic's agent workflows using git worktrees.
-Allows creating multiple worktree variants, implementing solutions in parallel,
-evaluating them, and selecting the best one.
+Implements multiple development workflows using git worktrees:
+- Voting pattern: Create multiple implementations and select the best
+- Ad hoc tasks: Single worktree for quick development
+- Orchestrated subtasks: Break complex tasks into parallel worktrees
 """
 
 import asyncio
@@ -17,6 +18,7 @@ from pathlib import Path
 from typing import Dict, Optional
 
 from fastmcp import FastMCP
+import re
 
 
 class WorktreeSession:
@@ -33,6 +35,8 @@ class WorktreeSession:
         self.evaluations: Dict[str, dict] = {}  # Track implementation evaluations
         self.created_at = datetime.now()
         self.base_branch = self._get_current_branch()
+        # Store task slug for consistent branch naming
+        self.task_slug = ''.join(c for c in task[:20] if c.isalnum() or c == ' ').replace(' ', '-').lower()
     
     def _get_current_branch(self) -> str:
         """Get the current git branch"""
@@ -43,10 +47,22 @@ class WorktreeSession:
             text=True
         )
         return result.stdout.strip() if result.returncode == 0 else "main"
+    
+    def _get_branch_name(self, session_id: str, worktree_id: str) -> str:
+        """Get the branch name for a worktree"""
+        return f"voting-{session_id}-{self.task_slug}-{worktree_id}"
+
+
+def _get_branch_name(session_id: str, worktree_id: str) -> str:
+    """Get the branch name for a worktree when session is not available"""
+    if session_id in sessions:
+        return sessions[session_id]._get_branch_name(session_id, worktree_id)
+    # Fallback for cleanup operations
+    return f"voting-{session_id}-{worktree_id}"
 
 
 # Initialize FastMCP
-mcp = FastMCP("worktree-voting")
+mcp = FastMCP("worktree-workflows")
 
 # Global sessions store
 sessions: Dict[str, WorktreeSession] = {}
@@ -191,7 +207,7 @@ def setup_worktree_instructions(session_id: str):
 
 
 @mcp.tool()
-def create_voting_session(task: str, num_variants: int = 5, target_repo: str = None) -> str:
+def create_voting_worktrees(task: str, num_variants: int = 5, target_repo: str = None) -> str:
     """Create a new voting session with multiple worktrees
     
     Args:
@@ -223,10 +239,13 @@ def create_voting_session(task: str, num_variants: int = 5, target_repo: str = N
     worktrees_dir = parent_path / f"{repo_path.name}.worktrees"
     worktrees_dir.mkdir(exist_ok=True)
     
+    # Create a task slug for naming (first 20 chars, alphanumeric only)
+    task_slug = ''.join(c for c in task[:20] if c.isalnum() or c == ' ').replace(' ', '-').lower()
+    
     for i in range(num_variants):
         variant_id = f"variant-{i+1}"
-        branch_name = f"voting-{session_id}-{variant_id}"
-        worktree_path = worktrees_dir / f"{session_id}-{variant_id}"
+        branch_name = f"voting-{session_id}-{task_slug}-{variant_id}"
+        worktree_path = worktrees_dir / f"{session_id}-{task_slug}-var{i+1}"
         
         # Create worktree
         result = subprocess.run(
@@ -324,7 +343,7 @@ def get_worktree_info(session_id: str, worktree_id: Optional[str] = None) -> str
             "worktree_id": worktree_id,
             "path": str(session.worktrees[worktree_id]),
             "completed": session.implementations[worktree_id],
-            "branch": f"voting-{session_id}-{worktree_id}"
+            "branch": self._get_branch_name(session_id, worktree_id)
         }
     else:
         info = {
@@ -335,7 +354,7 @@ def get_worktree_info(session_id: str, worktree_id: Optional[str] = None) -> str
                     "id": wid,
                     "path": str(path),
                     "completed": session.implementations[wid],
-                    "branch": f"voting-{session_id}-{wid}"
+                    "branch": self._get_branch_name(session_id, wid)
                 }
                 for wid, path in session.worktrees.items()
             ]
@@ -387,7 +406,7 @@ def evaluate_implementations(session_id: str) -> str:
             "worktree_id": wid,
             "path": str(path),
             "completed": session.implementations[wid],
-            "branch": f"voting-{session_id}-{wid}",
+            "branch": self._get_branch_name(session_id, wid),
             "execution_result": session.execution_results.get(wid, {}),
             "evaluation": session.evaluations.get(wid, {})
         }
@@ -489,7 +508,7 @@ def finalize_best(session_id: str, worktree_id: str, merge_to_main: bool = False
     if worktree_id not in session.worktrees:
         return f"Worktree {worktree_id} not found"
     
-    winner_branch = f"voting-{session_id}-{worktree_id}"
+    winner_branch = _get_branch_name(session_id, worktree_id)
     
     if merge_to_main:
         # Switch to base branch and merge
@@ -512,7 +531,7 @@ def finalize_best(session_id: str, worktree_id: str, merge_to_main: bool = False
     for wid, path in session.worktrees.items():
         if wid != worktree_id:
             subprocess.run(["git", "worktree", "remove", str(path), "--force"], cwd=session.base_path)
-            subprocess.run(["git", "branch", "-D", f"voting-{session_id}-{wid}"], cwd=session.base_path)
+            subprocess.run(["git", "branch", "-D", _get_branch_name(session_id, wid)], cwd=session.base_path)
             cleaned_up.append(wid)
     
     return json.dumps({
@@ -556,7 +575,7 @@ def cleanup_session(session_id: str, force: bool = False) -> str:
     # Remove all worktrees
     for wid, path in session.worktrees.items():
         subprocess.run(["git", "worktree", "remove", str(path), "--force"], cwd=session.base_path)
-        subprocess.run(["git", "branch", "-D", f"voting-{session_id}-{wid}"], cwd=session.base_path)
+        subprocess.run(["git", "branch", "-D", _get_branch_name(session_id, wid)], cwd=session.base_path)
     
     # Note: The worktrees directory is now shared across sessions,
     # so we don't remove it entirely. The git worktree remove command
@@ -569,6 +588,206 @@ def cleanup_session(session_id: str, force: bool = False) -> str:
         "session_id": session_id,
         "message": "All worktrees removed and session deleted"
     }, indent=2)
+
+
+@mcp.tool()
+def create_adhoc_worktree(task: str, target_repo: str = None) -> str:
+    """Create a single worktree from origin/main and execute task with Claude
+    
+    Args:
+        task: The task to execute in the worktree
+        target_repo: Name of the target repository directory (if not provided, looks for single repo)
+    """
+    worktree_id = str(uuid.uuid4())[:8]
+    parent_path = Path.cwd()
+    
+    # Find target repository
+    if target_repo:
+        repo_path = parent_path / target_repo
+    else:
+        # Look for a single git repository in current directory
+        git_repos = [d for d in parent_path.iterdir() if d.is_dir() and (d / ".git").exists()]
+        if len(git_repos) == 0:
+            return "Error: No git repository found in current directory"
+        elif len(git_repos) > 1:
+            return f"Error: Multiple git repositories found. Please specify target_repo parameter. Found: {[r.name for r in git_repos]}"
+        repo_path = git_repos[0]
+    
+    if not (repo_path / ".git").exists():
+        return f"Error: {repo_path} is not a git repository"
+    
+    # Create a task slug for naming
+    task_slug = ''.join(c for c in task[:30] if c.isalnum() or c == ' ').replace(' ', '-').lower()
+    
+    # Create worktrees directory alongside the repo
+    worktrees_dir = parent_path / f"{repo_path.name}.worktrees"
+    worktrees_dir.mkdir(exist_ok=True)
+    
+    # Create worktree from origin/main
+    branch_name = f"adhoc-{worktree_id}-{task_slug}"
+    worktree_path = worktrees_dir / f"adhoc-{worktree_id}-{task_slug}"
+    
+    # Fetch latest from origin and create worktree from origin/main
+    subprocess.run(["git", "fetch", "origin"], cwd=repo_path, capture_output=True)
+    result = subprocess.run(
+        ["git", "worktree", "add", "-b", branch_name, str(worktree_path), "origin/main"],
+        cwd=repo_path,
+        capture_output=True,
+        text=True
+    )
+    
+    if result.returncode != 0:
+        return f"Error creating worktree: {result.stderr}"
+    
+    # Create task instructions
+    instructions_file = create_task_instructions(worktree_path, task, worktree_id, worktree_id)
+    
+    # Spawn terminal with Claude
+    spawn_terminal_for_worktree(worktree_path, task)
+    
+    response = {
+        "worktree_id": worktree_id,
+        "task": task,
+        "branch": branch_name,
+        "path": str(worktree_path),
+        "instruction_file": instructions_file,
+        "status": "Worktree created from origin/main and Claude session started",
+        "terminal_command": f'cd "{worktree_path}" && claude "{task}" --dangerously-skip-permissions'
+    }
+    
+    return json.dumps(response, indent=2)
+
+
+@mcp.tool()
+def create_orchestrated_worktrees(task: str, subtasks: list[str], target_repo: str = None) -> str:
+    """Create multiple worktrees for subtasks with orchestrated execution
+    
+    Args:
+        task: The main task description
+        subtasks: List of subtasks to execute in separate worktrees
+        target_repo: Name of the target repository directory (if not provided, looks for single repo)
+    """
+    session_id = str(uuid.uuid4())[:8]
+    parent_path = Path.cwd()
+    
+    # Find target repository
+    if target_repo:
+        repo_path = parent_path / target_repo
+    else:
+        # Look for a single git repository in current directory
+        git_repos = [d for d in parent_path.iterdir() if d.is_dir() and (d / ".git").exists()]
+        if len(git_repos) == 0:
+            return "Error: No git repository found in current directory"
+        elif len(git_repos) > 1:
+            return f"Error: Multiple git repositories found. Please specify target_repo parameter. Found: {[r.name for r in git_repos]}"
+        repo_path = git_repos[0]
+    
+    if not (repo_path / ".git").exists():
+        return f"Error: {repo_path} is not a git repository"
+    
+    # Create worktrees directory alongside the repo
+    worktrees_dir = parent_path / f"{repo_path.name}.worktrees"
+    worktrees_dir.mkdir(exist_ok=True)
+    
+    # Get current branch
+    result = subprocess.run(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+        cwd=repo_path,
+        capture_output=True,
+        text=True
+    )
+    base_branch = result.stdout.strip() if result.returncode == 0 else "main"
+    
+    worktrees = {}
+    terminal_commands = []
+    instruction_files = []
+    
+    for i, subtask in enumerate(subtasks):
+        # Create a subtask slug for naming
+        subtask_slug = ''.join(c for c in subtask[:30] if c.isalnum() or c == ' ').replace(' ', '-').lower()
+        
+        worktree_id = f"subtask-{i+1}"
+        branch_name = f"orchestrated-{session_id}-{subtask_slug}"
+        worktree_path = worktrees_dir / f"{session_id}-{subtask_slug}"
+        
+        # Create worktree
+        result = subprocess.run(
+            ["git", "worktree", "add", "-b", branch_name, str(worktree_path)],
+            cwd=repo_path,
+            capture_output=True,
+            text=True
+        )
+        
+        if result.returncode != 0:
+            return f"Error creating worktree for subtask {i+1}: {result.stderr}"
+        
+        worktrees[worktree_id] = {
+            "path": str(worktree_path),
+            "branch": branch_name,
+            "subtask": subtask
+        }
+        
+        # Create task instructions for subtask
+        instructions = f"""# Orchestrated Task: Subtask {i+1}
+
+## Main Task
+{task}
+
+## Your Subtask
+{subtask}
+
+## Instructions
+1. Work in this directory: {worktree_path}
+2. Focus only on your specific subtask
+3. Complete the subtask thoroughly and with high quality
+4. Your work will be combined with other subtasks to complete the main task
+
+## How to start
+Open a terminal and run:
+```bash
+cd "{worktree_path}"
+claude
+```
+
+Then describe what you want to accomplish based on the subtask above.
+"""
+        
+        # Write instructions to the worktree
+        instructions_file = worktree_path / "SUBTASK_INSTRUCTIONS.md"
+        with open(instructions_file, 'w') as f:
+            f.write(instructions)
+        
+        instruction_files.append(str(instructions_file))
+        
+        command = f'claude "{subtask}" --dangerously-skip-permissions'
+        terminal_commands.append({
+            "worktree_id": worktree_id,
+            "path": str(worktree_path),
+            "command": f'cd "{worktree_path}" && {command}'
+        })
+        
+        # Spawn Terminal window for this subtask
+        spawn_terminal_for_worktree(worktree_path, subtask)
+    
+    response = {
+        "session_id": session_id,
+        "main_task": task,
+        "subtasks": subtasks,
+        "num_worktrees": len(subtasks),
+        "target_repo": repo_path.name,
+        "base_branch": base_branch,
+        "worktrees": worktrees,
+        "instruction_files": instruction_files,
+        "terminal_commands": terminal_commands,
+        "status": f"Created {len(subtasks)} worktrees for orchestrated execution",
+        "instructions": (
+            f"{len(subtasks)} Terminal windows have been opened, each with a Claude session for a specific subtask. "
+            f"Each worktree has a SUBTASK_INSTRUCTIONS.md file with the subtask details. "
+            f"Monitor progress across all worktrees to ensure coordinated completion of the main task."
+        )
+    }
+    
+    return json.dumps(response, indent=2)
 
 
 def main():
