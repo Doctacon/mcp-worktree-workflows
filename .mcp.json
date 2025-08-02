@@ -6,9 +6,21 @@
         "args": [
             "run",
             "--no-project",
-            "/Users/crlough/Code/personal/mcp-servers/worktree_workflows.py"
+            "--with",
+            "fastmcp",
+            "./mcp-servers/worktree_workflows.py"
         ],
         "env": {}
-      }
+      },
+      "ElevenLabs": {
+          "type": "stdio",
+          "command": "uvx",
+          "args": [
+            "elevenlabs-mcp"
+          ],
+          "env": {
+            "ELEVENLABS_API_KEY": "<sample-api-key>"
+          }
+        }
     }
 }
