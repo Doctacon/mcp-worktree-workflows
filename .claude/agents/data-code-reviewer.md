@@ -3,6 +3,7 @@ name: data-code-reviewer
 description: Specialist for reviewing data engineering, ETL/ELT pipelines, SQL queries, and data science code. Use proactively for data pipeline reviews, ML model evaluations, and data quality assessments.
 tools: Read, Grep, Glob, WebSearch, WebFetch, Bash
 color: Blue
+model: opus
 ---
 
 # Purpose

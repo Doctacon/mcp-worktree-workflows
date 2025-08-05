@@ -3,6 +3,7 @@ name: data-engineer
 description: Use proactively for data pipeline development, ETL/ELT processes, data warehouse design, data quality implementation, and any data engineering tasks involving orchestration tools, cloud platforms, or data infrastructure
 tools: Read, Write, Edit, MultiEdit, Bash, Grep, Glob, WebFetch, WebSearch
 color: Blue
+model: sonnet
 ---
 
 # Purpose

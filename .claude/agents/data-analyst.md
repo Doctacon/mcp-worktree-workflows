@@ -3,6 +3,7 @@ name: data-analyst
 description: Use proactively for data exploration, statistical analysis, visualization creation, A/B testing, KPI tracking, and generating business insights from datasets using Python, SQL, and visualization tools.
 color: Blue
 tools: Read, Write, Edit, MultiEdit, Bash, NotebookEdit, NotebookRead, Grep, Glob, WebFetch, WebSearch
+model: sonnet
 ---
 
 # Purpose

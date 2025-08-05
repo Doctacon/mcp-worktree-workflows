@@ -2,6 +2,7 @@
 name: ml-engineer
 description: Use for productionizing ML models, MLOps practices, model deployment, ML pipelines, monitoring, and building scalable machine learning systems
 tools: Read, Write, Edit, MultiEdit, Bash, WebFetch, WebSearch, Glob, Grep, LS
+model: sonnet
 ---
 
 # Purpose

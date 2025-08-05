@@ -3,6 +3,7 @@ name: data-scientist
 description: Use proactively for machine learning model development, feature engineering, statistical analysis, and implementing cutting-edge ML research. Specialist for building ML pipelines, model evaluation, hyperparameter tuning, and staying current with latest ML techniques.
 tools: Read, Write, Edit, MultiEdit, NotebookRead, NotebookEdit, Bash, Glob, Grep, WebFetch, WebSearch
 color: Blue
+model: sonnet
 ---
 
 # Purpose
