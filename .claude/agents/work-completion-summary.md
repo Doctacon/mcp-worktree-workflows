@@ -22,7 +22,7 @@ When invoked after work completion, you must follow these steps:
 2. IMPORTANT: **Create ultra-concise summary**: Craft a concise 1 sentence maximum summary of what was done (no introductions, no filler)
 3. **Suggest next steps**: Add concise 1 logical next actions in equally concise format
 4. **Generate audio**:
-   - Use `mcp__ElevenLabs__text_to_speech` with voice_id "WejK3H1m7MI9CHnIjW9K"
+   - Use `mcp__ElevenLabs__text_to_speech` with voice_id "BZgkqPqms7Kj9ulSkVzn"
    - Get current directory with `pwd` command
    - Save to absolute path: `{current_directory}/output/work-summary-{timestamp}.mp3`
    - Create output directory if it doesn't exist
