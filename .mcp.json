@@ -30,6 +30,24 @@
             "SQLMESH_STATE_DIR": "./.sqlmesh_state"
         }
       },
+      "duckdb": {
+        "type": "stdio",
+        "command": "uv",
+        "args": [
+            "run",
+            "--no-project",
+            "--with",
+            "fastmcp",
+            "--with",
+            "duckdb",
+            "--with",
+            "pandas",
+            "./mcp-servers/duckdb_server.py"
+        ],
+        "env": {
+            "DUCKDB_STATE_DIR": "./.duckdb_state"
+        }
+      },
       "ElevenLabs": {
           "type": "stdio",
           "command": "uvx",
