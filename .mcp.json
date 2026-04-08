@@ -66,6 +66,24 @@
             "DAGSTER_STATE_DIR": "./.dagster_state"
         }
       },
+      "dlt": {
+        "type": "stdio",
+        "command": "uv",
+        "args": [
+            "run",
+            "--no-project",
+            "--with",
+            "fastmcp",
+            "--with",
+            "dlt",
+            "--with",
+            "duckdb",
+            "./mcp-servers/dlt_server.py"
+        ],
+        "env": {
+            "DLT_STATE_DIR": "./.dlt_state"
+        }
+      },
       "ElevenLabs": {
           "type": "stdio",
           "command": "uvx",
