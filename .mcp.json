@@ -12,6 +12,24 @@
         ],
         "env": {}
       },
+      "sqlmesh": {
+        "type": "stdio",
+        "command": "uv",
+        "args": [
+            "run",
+            "--no-project",
+            "--with",
+            "fastmcp",
+            "--with",
+            "sqlmesh",
+            "--with",
+            "pyyaml",
+            "./mcp-servers/sqlmesh_server.py"
+        ],
+        "env": {
+            "SQLMESH_STATE_DIR": "./.sqlmesh_state"
+        }
+      },
       "ElevenLabs": {
           "type": "stdio",
           "command": "uvx",
