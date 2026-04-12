@@ -17,6 +17,7 @@ Expects a SODA_DIR directory (default: ./soda) with:
 No Soda Cloud account required. All checks run locally.
 """
 
+import functools
 import json
 import os
 from datetime import datetime
@@ -100,6 +101,7 @@ _REDACT = {"password", "secret", "token", "key", "credential", "api_key", "apike
 def handle_soda_errors(func):
     """Decorator for consistent Soda Core error handling."""
 
+    @functools.wraps(func)
     def wrapper(*args, **kwargs):
         if not SODA_AVAILABLE:
             return json.dumps(

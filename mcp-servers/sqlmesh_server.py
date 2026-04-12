@@ -13,6 +13,7 @@ Exposes SQLMesh data transformation workflow capabilities through MCP:
 """
 
 import asyncio
+import functools
 import json
 import uuid
 from datetime import datetime
@@ -46,6 +47,7 @@ state_dir: Optional[Path] = None
 
 def handle_sqlmesh_errors(func):
     """Decorator for consistent SQLMesh error handling"""
+    @functools.wraps(func)
     def wrapper(*args, **kwargs):
         if not SQLMESH_AVAILABLE:
             return json.dumps({

@@ -1,6 +1,6 @@
 {
     "mcpServers": {
-      "worktree-voting": {
+      "worktrees": {
         "type": "stdio",
         "command": "uv",
         "args": [
@@ -8,7 +8,7 @@
             "--no-project",
             "--with",
             "fastmcp",
-            "./mcp-servers/worktree_workflows.py"
+            "./mcp-servers/worktree_server.py"
         ],
         "env": {}
       },
@@ -94,8 +94,6 @@
             "fastmcp",
             "--with",
             "soda-core",
-            "--with",
-            "soda-core-duckdb",
             "--with",
             "pyyaml",
             "./mcp-servers/soda_server.py"

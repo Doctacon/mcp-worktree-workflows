@@ -13,6 +13,7 @@ Exposes dlt data pipeline capabilities through MCP:
 """
 
 import asyncio
+import functools
 import json
 import os
 import uuid
@@ -169,6 +170,7 @@ def save_run_state(run: DltRun):
 
 def handle_dlt_errors(func):
     """Decorator for consistent dlt error handling"""
+    @functools.wraps(func)
     def wrapper(*args, **kwargs):
         if not DLT_AVAILABLE:
             return json.dumps({

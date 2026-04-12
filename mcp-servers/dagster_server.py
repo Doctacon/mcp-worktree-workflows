@@ -12,6 +12,7 @@ Exposes Dagster data orchestration capabilities through MCP:
 """
 
 import asyncio
+import functools
 import json
 import os
 import uuid
@@ -341,6 +342,7 @@ class DagsterOutputParser:
 
 def handle_dagster_errors(func):
     """Decorator for consistent Dagster error handling"""
+    @functools.wraps(func)
     def wrapper(*args, **kwargs):
         try:
             return func(*args, **kwargs)

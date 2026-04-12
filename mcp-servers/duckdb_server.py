@@ -16,6 +16,7 @@ Exposes DuckDB analytical database capabilities through MCP:
 """
 
 import asyncio
+import functools
 import json
 import uuid
 from dataclasses import dataclass, asdict
@@ -81,6 +82,7 @@ class SchemaInfo:
 
 def handle_duckdb_errors(func):
     """Decorator for consistent DuckDB error handling"""
+    @functools.wraps(func)
     def wrapper(*args, **kwargs):
         if not DUCKDB_AVAILABLE:
             return json.dumps({

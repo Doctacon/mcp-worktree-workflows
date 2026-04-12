@@ -15,6 +15,7 @@ to point at the Colima socket: unix:///Users/<you>/.colima/default/docker.sock
 """
 
 import concurrent.futures
+import functools
 import json
 from typing import Optional
 
@@ -52,6 +53,7 @@ def get_client():
 def handle_docker_errors(func):
     """Decorator for consistent Docker error handling."""
 
+    @functools.wraps(func)
     def wrapper(*args, **kwargs):
         if not DOCKER_AVAILABLE:
             return json.dumps(
