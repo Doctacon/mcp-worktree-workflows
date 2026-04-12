@@ -84,6 +84,26 @@
             "DLT_STATE_DIR": "./.dlt_state"
         }
       },
+      "soda": {
+        "type": "stdio",
+        "command": "uv",
+        "args": [
+            "run",
+            "--no-project",
+            "--with",
+            "fastmcp",
+            "--with",
+            "soda-core",
+            "--with",
+            "soda-core-duckdb",
+            "--with",
+            "pyyaml",
+            "./mcp-servers/soda_server.py"
+        ],
+        "env": {
+            "SODA_DIR": "./soda"
+        }
+      },
       "docker": {
         "type": "stdio",
         "command": "uv",
