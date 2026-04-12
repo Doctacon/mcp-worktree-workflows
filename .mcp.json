@@ -84,6 +84,22 @@
             "DLT_STATE_DIR": "./.dlt_state"
         }
       },
+      "docker": {
+        "type": "stdio",
+        "command": "uv",
+        "args": [
+            "run",
+            "--no-project",
+            "--with",
+            "fastmcp",
+            "--with",
+            "docker",
+            "./mcp-servers/docker_server.py"
+        ],
+        "env": {
+            "DOCKER_HOST": "unix:///Users/crlough/.colima/default/docker.sock"
+        }
+      },
       "ElevenLabs": {
           "type": "stdio",
           "command": "uvx",
