@@ -126,60 +126,59 @@ class DagsterCommandBuilder:
 
     def __init__(self, project: DagsterProject):
         self.project = project
+        # Use project venv dagster if available, else fall back to PATH
+        venv_dagster = project.project_path / ".venv" / "bin" / "dagster"
+        self.dagster_bin = str(venv_dagster) if venv_dagster.exists() else "dagster"
+        self.workspace_args = ["-f", str(self.project.workspace_file)]
 
     def asset_list(self, prefix: str = None) -> List[str]:
-        """Build asset list command"""
-        cmd = ["dagster", "-f", str(self.project.workspace_file), "asset", "list"]
+        cmd = [self.dagster_bin, "asset", "list"] + self.workspace_args
         if prefix:
             cmd.extend(["--prefix", prefix])
         return cmd
 
     def asset_materialize(self, asset_key: str, partition: str = None) -> List[str]:
-        """Build asset materialize command"""
-        cmd = ["dagster", "-f", str(self.project.workspace_file), "asset", "materialize", asset_key]
+        cmd = [self.dagster_bin, "asset", "materialize", "--select", asset_key] + self.workspace_args
+        if partition:
+            cmd.extend(["--partition", partition])
+        return cmd
+
+    def asset_materialize_selection(self, selection: str, partition: str = None) -> List[str]:
+        cmd = [self.dagster_bin, "asset", "materialize", "--select", selection] + self.workspace_args
         if partition:
             cmd.extend(["--partition", partition])
         return cmd
 
     def asset_wipe(self, asset_key: str) -> List[str]:
-        """Build asset wipe command"""
-        return ["dagster", "-f", str(self.project.workspace_file), "asset", "wipe", asset_key]
+        return [self.dagster_bin, "asset", "wipe", "--select", asset_key] + self.workspace_args
 
     def job_list(self) -> List[str]:
-        """Build job list command"""
-        return ["dagster", "-f", str(self.project.workspace_file), "job", "list"]
+        return [self.dagster_bin, "job", "list"] + self.workspace_args
 
     def job_execute(self, job_name: str) -> List[str]:
-        """Build job execute command"""
-        return ["dagster", "-f", str(self.project.workspace_file), "job", "execute", job_name]
+        return [self.dagster_bin, "job", "execute", "-j", job_name] + self.workspace_args
 
     def run_list(self, job_name: str = None, limit: int = 50) -> List[str]:
-        """Build run list command"""
-        cmd = ["dagster", "-f", str(self.project.workspace_file), "run", "list"]
+        cmd = [self.dagster_bin, "run", "list"] + self.workspace_args
         if job_name:
             cmd.extend(["--job", job_name])
         cmd.extend(["--limit", str(limit)])
         return cmd
 
     def run_logs(self, run_id: str) -> List[str]:
-        """Build run logs command"""
-        return ["dagster", "-f", str(self.project.workspace_file), "run", "logs", run_id]
+        return [self.dagster_bin, "run", "logs", run_id] + self.workspace_args
 
     def run_report(self, run_id: str) -> List[str]:
-        """Build run report command"""
-        return ["dagster", "-f", str(self.project.workspace_file), "run", "report", run_id]
+        return [self.dagster_bin, "run", "report", run_id] + self.workspace_args
 
     def schedule_list(self) -> List[str]:
-        """Build schedule list command"""
-        return ["dagster", "-f", str(self.project.workspace_file), "schedule", "list"]
+        return [self.dagster_bin, "schedule", "list"] + self.workspace_args
 
     def schedule_tick(self, schedule_name: str) -> List[str]:
-        """Build schedule tick command"""
-        return ["dagster", "-f", str(self.project.workspace_file), "schedule", "tick", schedule_name]
+        return [self.dagster_bin, "schedule", "tick", schedule_name] + self.workspace_args
 
     def sensor_list(self) -> List[str]:
-        """Build sensor list command"""
-        return ["dagster", "-f", str(self.project.workspace_file), "sensor", "list"]
+        return [self.dagster_bin, "sensor", "list"] + self.workspace_args
 
 
 async def execute_dagster_command(
@@ -195,6 +194,10 @@ async def execute_dagster_command(
         process_env = os.environ.copy()
         if cwd:
             process_env["PYTHONPATH"] = str(cwd)
+            # Set absolute DAGSTER_HOME so CLI doesn't reject relative paths
+            dagster_home = cwd / ".dagster"
+            dagster_home.mkdir(exist_ok=True)
+            process_env["DAGSTER_HOME"] = str(dagster_home)
         if env:
             process_env.update(env)
 
@@ -391,24 +394,36 @@ def load_project(
     # Generate project ID
     project_id = str(uuid.uuid4())[:8]
 
-    # Determine workspace file
+    # Determine definitions file (dagster CLI needs -f <python_file>)
     if workspace_file:
-        workspace = Path(workspace_file)
+        candidate = Path(workspace_file)
+        # If a workspace.yaml was given, extract the python_file from it
+        if str(candidate).endswith((".yaml", ".yml")) and candidate.exists() and YAML_AVAILABLE:
+            with open(candidate) as f:
+                ws_data = yaml.safe_load(f)
+            try:
+                rel = ws_data["load_from"][0]["python_file"]["relative_path"]
+                working_dir = ws_data["load_from"][0]["python_file"].get("working_directory", ".")
+                workspace = Path(working_dir) / rel
+                if not workspace.is_absolute():
+                    workspace = path / workspace
+                workspace = workspace.resolve()
+            except (KeyError, IndexError, TypeError):
+                workspace = candidate
+        else:
+            workspace = candidate
     else:
-        workspace = path / "workspace.yaml"
-        # Create workspace file if it doesn't exist
-        if not workspace.exists():
-            # Try to find repository definition
-            if (path / "__init__.py").exists():
-                workspace = path / "workspace.yaml"
-            elif (path / "repository.py").exists():
-                workspace = path / "workspace.yaml"
-            else:
-                return json.dumps({
-                    "error": "InvalidProject",
-                    "message": "No Dagster repository definitions found",
-                    "suggestion": "Ensure project contains __init__.py or repository.py"
-                }, indent=2)
+        # Auto-discover: prefer orchestration/definitions.py, then definitions.py
+        for candidate in ["orchestration/definitions.py", "definitions.py", "repository.py"]:
+            if (path / candidate).exists():
+                workspace = path / candidate
+                break
+        else:
+            return json.dumps({
+                "error": "InvalidProject",
+                "message": "No Dagster definitions file found",
+                "suggestion": "Pass workspace_file pointing to your definitions Python file"
+            }, indent=2)
 
     # Create project
     project = DagsterProject(
@@ -549,71 +564,6 @@ async def list_assets(
 @handle_dagster_errors
 async def materialize_assets(
     project_id: str,
-    asset_key: str,
-    partition: str = None,
-    run_config: dict = None
-) -> str:
-    """Materialize a single asset
-
-    Args:
-        project_id: Project context ID
-        asset_key: Asset key to materialize
-        partition: Optional partition key
-        run_config: Optional run configuration
-
-    Returns:
-        Materialization status and run ID
-    """
-    if project_id not in projects:
-        return json.dumps({
-            "error": "ProjectNotFound",
-            "message": f"Project ID not found: {project_id}"
-        }, indent=2)
-
-    project = projects[project_id]
-    builder = DagsterCommandBuilder(project)
-
-    # Execute command
-    cmd = builder.asset_materialize(asset_key, partition=partition)
-    result = await execute_dagster_command(cmd, cwd=project.project_path)
-
-    # Create run record
-    run_id = str(uuid.uuid4())[:8]
-    run = DagsterRun(
-        run_id=run_id,
-        project_id=project_id,
-        status="SUCCESS" if result["success"] else "FAILURE",
-        started_at=datetime.now().isoformat(),
-        completed_at=datetime.now().isoformat() if result["success"] else None,
-        logs=result["stdout"].split('\n') if result["stdout"] else [],
-        metadata={"asset_key": asset_key, "partition": partition}
-    )
-
-    runs[run_id] = run
-    save_run_state(run)
-
-    if not result["success"]:
-        return json.dumps({
-            "status": "failure",
-            "run_id": run_id,
-            "error": result["stderr"],
-            "logs": result["stdout"]
-        }, indent=2)
-
-    return json.dumps({
-        "status": "success",
-        "run_id": run_id,
-        "project_id": project_id,
-        "asset_key": asset_key,
-        "partition": partition,
-        "completed_at": run.completed_at
-    }, indent=2)
-
-
-@mcp.tool()
-@handle_dagster_errors
-async def materialize_assets(
-    project_id: str,
     asset_keys: List[str] = None,
     selection: str = None,
     partition: str = None,
@@ -624,7 +574,7 @@ async def materialize_assets(
     Args:
         project_id: Project context ID
         asset_keys: List of asset keys (optional)
-        selection: Asset selection string (optional)
+        selection: Asset selection string e.g. "*" for all assets (optional)
         partition: Optional partition key
         run_config: Optional run configuration
 
@@ -643,30 +593,47 @@ async def materialize_assets(
             "message": "Must provide either asset_keys or selection"
         }, indent=2)
 
-    # Use asset keys if provided
-    if asset_keys:
-        results = []
-        for asset_key in asset_keys:
-            result = await materialize_asset(
-                project_id=project_id,
-                asset_key=asset_key,
-                partition=partition,
-                run_config=run_config
-            )
-            results.append(json.loads(result))
+    project = projects[project_id]
+    builder = DagsterCommandBuilder(project)
 
+    # Build selection string: join asset_keys with comma, or use selection directly
+    if asset_keys:
+        sel = ",".join(asset_keys)
+    else:
+        sel = selection
+
+    cmd = builder.asset_materialize_selection(sel, partition=partition)
+    result = await execute_dagster_command(cmd, cwd=project.project_path, timeout=600)
+
+    run_id = str(uuid.uuid4())[:8]
+    run = DagsterRun(
+        run_id=run_id,
+        project_id=project_id,
+        status="SUCCESS" if result["success"] else "FAILURE",
+        started_at=datetime.now().isoformat(),
+        completed_at=datetime.now().isoformat() if result["success"] else None,
+        logs=result["stdout"].split('\n') if result["stdout"] else [],
+        metadata={"selection": sel, "partition": partition}
+    )
+
+    runs[run_id] = run
+    save_run_state(run)
+
+    if not result["success"]:
         return json.dumps({
-            "status": "success",
-            "count": len(asset_keys),
-            "results": results
+            "status": "failure",
+            "run_id": run_id,
+            "selection": sel,
+            "error": result["stderr"],
+            "logs": result["stdout"]
         }, indent=2)
 
-    # Otherwise use selection
-    # (For simplicity, we'll return a message about selection)
     return json.dumps({
-        "status": "not_implemented",
-        "message": "Asset selection not yet implemented",
-        "suggestion": "Use asset_keys parameter instead"
+        "status": "success",
+        "run_id": run_id,
+        "project_id": project_id,
+        "selection": sel,
+        "completed_at": run.completed_at
     }, indent=2)
 
 
